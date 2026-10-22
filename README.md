@@ -215,7 +215,7 @@ on `main`. AllGLANCE's own work lives under `gateway/`.
 ## What's deferred (honest)
 
 - `gateway/container-mcp/model/` is **vendored** from
-  `apps/dayglance/src/utils` + `agenda-core`; re-sync it with
+  `apps/dayglance/src/utils` + the workspace packages it imports; re-sync it with
   `node gateway/container-mcp/scripts/vendor-model.mjs` after a dayglance update.
 - The namespaced MCP tools sketched in `gateway/DESIGN.md` §6 (`calendar_*`,
   `goals_*`, `habits_*`, `get_week`, `move_block`, …) are **not** all

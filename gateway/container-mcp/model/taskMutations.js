@@ -25,12 +25,20 @@
 import { parseRoutineBlockId, routineBlockId } from './mcpRoutines.js';
 import { findRoutineConflict, minutesToTime } from './dayOccupancy.js';
 import { completionTimestamp } from './taskUtils.js';
+import { createdTimestamp } from './createdAt.js';
+
+// `createdAt` for a task a write creates: the write's own clock, in the
+// local-offset form every createdAt uses.
+const createdStamp = (nowIso) => createdTimestamp(nowIso ? new Date(nowIso) : new Date());
 import { getProjectColor } from './colorUtils.js';
+import { getOccurrencesInRange } from './recurrenceEngine.js';
+import { applyRecurringInstanceEdit } from './recurringInstanceEdit.js';
 
 export const WRITE_ERROR_CODES = Object.freeze({
   NOT_FOUND: 'not_found',
   VALIDATION: 'validation',
   NATIVE_READONLY: 'device_calendar_readonly',
+  CALENDAR_EVENT_READONLY: 'calendar_event_readonly',
   ROUTINE_READONLY: 'routine_readonly',
   ROUTINE_CONFLICT: 'routine_conflict',
 });
@@ -39,6 +47,23 @@ const err = (code, message) => ({ ok: false, error: { code, message } });
 
 const NATIVE_MSG = (id) =>
   `${id} is a device calendar event. dayGLANCE has read-only access to the device calendar and cannot modify, move, resize, or complete its events.`;
+
+/**
+ * An event imported from an ICS or CalDAV calendar feed (2026-10-04): the
+ * feed owns it, the app itself refuses to drag it, and a store-layer edit
+ * would be overwritten by the next fetch. Rejected like a device event, with
+ * its own code so a model can tell the two apart. CalDAV task-calendar tasks
+ * are not events and keep their own rules below.
+ */
+const isImportedEvent = (task) => !!task?.imported && !task.nativeEventId && !task.isTaskCalendar;
+const IMPORTED_MSG = (id) =>
+  `${id} is a calendar event imported from a calendar feed. dayGLANCE shows it so you can schedule around it, but it belongs to the feed and cannot be modified, moved, resized, or completed here.`;
+/** The read-only guards every task write shares: device events, then imported events. */
+const readOnlyGuard = (task, id) => {
+  if (task?._native) return err(WRITE_ERROR_CODES.NATIVE_READONLY, NATIVE_MSG(id));
+  if (isImportedEvent(task)) return err(WRITE_ERROR_CODES.CALENDAR_EVENT_READONLY, IMPORTED_MSG(id));
+  return null;
+};
 
 /**
  * Routines are read-only over MCP BY DESIGN, not by omission (spec §5.2).
@@ -165,7 +190,7 @@ export function parseRecurringInstanceId(id) {
  */
 export function applyCreateTask(state, {
   taskId, title, notes, projectId, assigneeSyncId,
-  priority, deadline, durationMinutes, schedule,
+  priority, deadline, durationMinutes, schedule, recurrence,
   transitionId, nowIso,
 }) {
   const unscheduled = state.unscheduledTasks ?? [];
@@ -190,6 +215,12 @@ export function applyCreateTask(state, {
         `No active user with id ${JSON.stringify(assigneeSyncId)}. Enumerate valid assignees with dayglance_list_users`);
     }
     assignedUserSyncIds = [member.syncId ?? member.id];
+  }
+
+  if (recurrence) {
+    return createRecurringSeries(state, {
+      taskId, title: trimmed, notes, projectId, assignedUserSyncIds, schedule, recurrence, nowIso,
+    });
   }
 
   const existing = unscheduled.find((t) => t.id === taskId) ?? tasks.find((t) => t.id === taskId);
@@ -218,6 +249,9 @@ export function applyCreateTask(state, {
     ...(projectId ? { projectId } : {}),
     ...(assignedUserSyncIds ? { assignedUserSyncIds } : {}),
     ...(transitionId ? { transitionId } : {}),
+    // Stamped here as well as by the persist pass (utils/createdAt.js), so the
+    // write's own response already says when the task was created.
+    createdAt: createdStamp(nowIso),
     lastModified: nowIso,
   };
 
@@ -249,6 +283,203 @@ export function applyCreateTask(state, {
     ...(deadline ? { deadline } : {}),
   };
   return { ok: true, replayed: false, unscheduledTasks: [...unscheduled, task], tasks, task, scheduled: false };
+}
+
+/** Default colour of a series with no project, as the UI's colors[0]. */
+const DEFAULT_COLOR = 'bg-blue-500';
+
+/**
+ * CREATE A REPEATING SERIES (#2066). The template is transcribed from the UI's
+ * "convert to recurring" save (App.jsx, the newTask.recurrence branch of the
+ * mobile editor): one row in recurringTasks under the caller's deterministic
+ * id, `recurrence.startDate` the requested date, all-day stored as startTime
+ * '00:00'. Project colour and users are inherited as for a one-off create.
+ *
+ * Deliberately NOT carried: transitionId. A template is not a task row, and a
+ * field the template never had would be a new field to declare to every sync
+ * layer (CLAUDE.md "Adding a field to a task"). The replay check needs none:
+ * the id itself is derived from the idempotency key.
+ *
+ * The routine guard runs on the FIRST OCCURRENCE, the date the caller is told
+ * the series starts on; later occurrences are not checked, exactly as the app
+ * does not check them when a series is created in the editor.
+ */
+function createRecurringSeries(state, {
+  taskId, title, notes, projectId, assignedUserSyncIds, schedule, recurrence, nowIso,
+}) {
+  const recurring = state.recurringTasks ?? [];
+  const existing = recurring.find((t) => String(t.id) === String(taskId));
+  if (existing) return { ok: true, replayed: true, recurringTasks: recurring, template: existing, series: true };
+
+  if (!schedule?.date) {
+    return err(WRITE_ERROR_CODES.VALIDATION, 'A repeating task needs a start date: pass start with repeat.');
+  }
+  const project = projectId ? (state.projects ?? []).find((p) => p.id === projectId) : undefined;
+  const parentGoal = project?.goalId ? (state.goals ?? []).find((g) => g.id === project.goalId) : undefined;
+  let users = assignedUserSyncIds;
+  if (!users && project?.assignedUserSyncIds?.length) users = [...project.assignedUserSyncIds];
+
+  const allDay = !!schedule.allDay;
+  const template = {
+    id: taskId,
+    title,
+    startTime: allDay ? '00:00' : schedule.startTime,
+    duration: schedule.durationMinutes,
+    color: project ? getProjectColor(project, parentGoal) : DEFAULT_COLOR,
+    isAllDay: allDay,
+    notes: typeof notes === 'string' ? notes : '',
+    subtasks: [],
+    recurrence: { ...recurrence, startDate: schedule.date },
+    completedDates: [],
+    exceptions: {},
+    ...(projectId ? { projectId } : {}),
+    ...(users ? { assignedUserSyncIds: users } : {}),
+    createdAt: createdStamp(nowIso),
+    lastModified: nowIso,
+  };
+
+  const [first] = getOccurrencesInRange(template, schedule.date, '9999-12-31', 1);
+  if (!first) {
+    return err(WRITE_ERROR_CODES.VALIDATION,
+      `That repeat produces no occurrence on or after ${schedule.date} before it ends, so the series would be empty.`);
+  }
+  const conflict = routineConflictGuard(state, first, {
+    startTime: template.startTime, durationMinutes: template.duration, allDay,
+  });
+  if (conflict) return conflict;
+
+  return { ok: true, replayed: false, recurringTasks: [...recurring, template], template, series: true };
+}
+
+/** The template fields a series edit can touch, restored whole by its undo. */
+const SERIES_UNDO_KEYS = ['title', 'startTime', 'duration', 'isAllDay', 'color', 'assignedUserSyncIds', 'notes', 'projectId', 'recurrence'];
+
+const NOT_AN_OCCURRENCE_MSG = (id) =>
+  `${id} is not an occurrence of its series: the series does not fall on that date. Read the day with ` +
+  'dayglance_get_day and use an id it lists.';
+
+/**
+ * EDIT A REPEATING SERIES OR ONE OCCURRENCE (#2066), through the app's own
+ * save (applyRecurringInstanceEdit, #2049): 'occurrence' writes the changed
+ * fields to that date's exception, 'series' writes them to the template and
+ * clears them from every exception. Notes, project and the pattern are
+ * series-level; the argument layer accepts them only with scope 'series'.
+ *
+ * A pattern change (`set.recurrence`) replaces the whole pattern, its end
+ * included, and the start never moves earlier (editedSeriesStart). Completions
+ * are never touched, here or by the undo.
+ *
+ * Returns the undo snapshot alongside the result: every SERIES_UNDO_KEYS value
+ * before the edit, the keys that were absent, and each exception date the edit
+ * changed with its prior value (null when it had none).
+ */
+export function applyUpdateRecurringTask(state, { taskId, scope, set = {}, clear = [], nowIso }) {
+  const recurring = state.recurringTasks ?? [];
+  const parsed = parseRecurringInstanceId(taskId);
+  if (!parsed) return err(WRITE_ERROR_CODES.VALIDATION, `${taskId} is not a recurring occurrence id`);
+  const template = recurring.find((t) => String(t.id) === String(parsed.templateId));
+  if (!template) return err(WRITE_ERROR_CODES.NOT_FOUND, `No recurring series behind ${taskId}`);
+  if (!getOccurrencesInRange(template, parsed.dateStr, parsed.dateStr, 1).includes(parsed.dateStr)) {
+    return err(WRITE_ERROR_CODES.NOT_FOUND, NOT_AN_OCCURRENCE_MSG(taskId));
+  }
+
+  let assignedUserSyncIds;
+  if (set.assigneeSyncId !== undefined) {
+    const member = (state.users ?? []).find(
+      (u) => !u.deleted && (u.syncId === set.assigneeSyncId || u.id === set.assigneeSyncId),
+    );
+    if (!member) {
+      return err(WRITE_ERROR_CODES.NOT_FOUND,
+        `No active user with id ${JSON.stringify(set.assigneeSyncId)}. Enumerate valid assignees with dayglance_list_users`);
+    }
+    assignedUserSyncIds = [member.syncId ?? member.id];
+  }
+  if (clear.includes('assignee')) assignedUserSyncIds = [];
+  if (set.projectId !== undefined && !(state.projects ?? []).some((p) => p && p.id === set.projectId)) {
+    return err(WRITE_ERROR_CODES.NOT_FOUND,
+      `No project with id ${JSON.stringify(set.projectId)}. Enumerate projects with dayglance_get_goal_progress`);
+  }
+
+  const current = recurringTaskInstanceFields(template, parsed.dateStr);
+  if (set.allDay === false && current.isAllDay && set.startTime === undefined) {
+    return err(WRITE_ERROR_CODES.VALIDATION,
+      'This occurrence is all-day; pass start_time with all_day false so it has a time to move to.');
+  }
+
+  const edit = {};
+  if (set.title !== undefined) edit.title = set.title;
+  if (set.allDay !== undefined) edit.isAllDay = set.allDay;
+  // A start time makes an all-day occurrence timed (the argument layer has
+  // already rejected start_time together with all_day true).
+  if (set.startTime !== undefined) { edit.startTime = set.startTime; edit.isAllDay = false; }
+  if (set.allDay === true) edit.startTime = '00:00';
+  if (set.durationMinutes !== undefined) edit.duration = set.durationMinutes;
+  if (assignedUserSyncIds !== undefined) edit.assignedUserSyncIds = assignedUserSyncIds;
+
+  const projectId = clear.includes('project') ? undefined : (set.projectId ?? template.projectId);
+  let next = applyRecurringInstanceEdit(template, {
+    dateStr: parsed.dateStr,
+    edit,
+    scope: scope === 'series' ? 'all' : 'this',
+    projectId,
+    recurrence: set.recurrence,
+    now: nowIso,
+  });
+  if (!projectId) delete next.projectId;
+  if (set.notes !== undefined) next = { ...next, notes: set.notes };
+  if (clear.includes('notes')) next = { ...next, notes: '' };
+
+  // The edited occurrence lands on a routine only if its own time changed, as
+  // move_block and resize_block check it; other dates are not checked, as the
+  // app does not check them when a series is edited in the editor.
+  const after = recurringTaskInstanceFields(next, parsed.dateStr);
+  const occurs = getOccurrencesInRange(next, parsed.dateStr, parsed.dateStr, 1).includes(parsed.dateStr);
+  if (occurs && (current.isAllDay !== after.isAllDay || current.startTime !== after.startTime || current.duration !== after.duration)) {
+    const conflict = routineConflictGuard(state, parsed.dateStr, {
+      startTime: after.startTime, durationMinutes: after.duration, allDay: after.isAllDay,
+    });
+    if (conflict) return conflict;
+  }
+
+  const before = {};
+  const absentBefore = [];
+  for (const key of SERIES_UNDO_KEYS) {
+    if (key in template && template[key] !== undefined) before[key] = template[key];
+    else absentBefore.push(key);
+  }
+  const exceptionsBefore = {};
+  const priorExceptions = template.exceptions || {};
+  const nextExceptions = next.exceptions || {};
+  for (const d of new Set([...Object.keys(priorExceptions), ...Object.keys(nextExceptions)])) {
+    if (JSON.stringify(priorExceptions[d]) !== JSON.stringify(nextExceptions[d])) {
+      exceptionsBefore[d] = priorExceptions[d] ?? null;
+    }
+  }
+  const changed = SERIES_UNDO_KEYS.some((k) => JSON.stringify(template[k]) !== JSON.stringify(next[k]))
+    || Object.keys(exceptionsBefore).length > 0;
+
+  if (!changed) {
+    return {
+      ok: true, replayed: false, unchanged: true, recurringTasks: recurring, template, dateStr: parsed.dateStr,
+      undoSnapshot: null,
+    };
+  }
+  return {
+    ok: true, replayed: false, unchanged: false,
+    recurringTasks: recurring.map((t) => (t === template ? next : t)),
+    template: next, dateStr: parsed.dateStr,
+    undoSnapshot: { templateId: template.id, before, absentBefore, exceptionsBefore },
+  };
+}
+
+/** The occurrence's own values: the template with that date's exception over it. */
+function recurringTaskInstanceFields(template, dateStr) {
+  const exc = template.exceptions?.[dateStr] || {};
+  return {
+    isAllDay: exc.isAllDay ?? template.isAllDay ?? false,
+    startTime: exc.startTime ?? template.startTime,
+    duration: exc.duration ?? template.duration,
+  };
 }
 
 /**
@@ -312,9 +543,8 @@ export function applyScheduleTask(state, { taskId, date, startTime, durationMinu
  * transitionId), notes from useTaskActions.updateTaskNotes, priority from
  * useDeadlinePriority.cyclePriority's commit map, deadline from
  * useTaskActions.setDeadline, assignee from the edit modal's direct
- * assignedUserSyncIds write. lastModified is deliberately NOT stamped here:
- * the save pass (useDataPersistence stampTaskTimestamps) diff-stamps both
- * tasks and unscheduledTasks, the applyMoveBlock/applyResizeBlock precedent.
+ * assignedUserSyncIds write. lastModified is stamped HERE, at the write
+ * (#2083), as every other MCP write already does; see stampedAt below.
  *
  * DELIBERATE DIFFERENCE from the UI edit modal: no cleanTitle(). Sigil
  * parsing ($fri, !2) is a typing-UI affordance; an agent writing "$fri" in a
@@ -322,9 +552,11 @@ export function applyScheduleTask(state, { taskId, date, startTime, durationMinu
  * would be state the caller never requested. create_task set this precedent.
  *
  * FIELD RULES, all typed and by-design in wording (§5.2):
- *  - priority/deadline (set OR clear) rejected on scheduled tasks and on
- *    project tasks: the UI disables both controls there, so writing them
- *    would create state the UI cannot display, edit, or clear.
+ *  - priority/deadline (set OR clear) rejected on scheduled tasks: the UI
+ *    disables both controls there, and scheduling strips them. Unscheduled
+ *    PROJECT tasks are inbox tasks and take both, as in the UI (the Inbox's
+ *    priority and deadline controls, and the deadline button on project
+ *    card rows and the PLANNER's unscheduled cards).
  *  - _native (module header), recurring instances (synthetic per-instance
  *    ids, dedicated error), and CalDAV task-calendar tasks (a local-only
  *    edit desyncs the user's CalDAV server; the set_task_completion
@@ -339,15 +571,15 @@ export function applyScheduleTask(state, { taskId, date, startTime, durationMinu
  * Returns `touched`: the STORAGE keys this call changed, in a stable order,
  * so the caller can capture exact before-state for the §4.3 undo journal.
  */
-export function applyUpdateTask(state, { taskId, set = {}, clear = [], transitionId }) {
+export function applyUpdateTask(state, { taskId, set = {}, clear = [], transitionId, nowIso }) {
   const tasks = state.tasks ?? [];
   const unscheduled = state.unscheduledTasks ?? [];
 
   if (parseRecurringInstanceId(taskId)) {
     return err(
       WRITE_ERROR_CODES.VALIDATION,
-      `${taskId} is a recurring-task instance: its id is a synthetic per-date view of the series, not an ` +
-      'editable task, and update_task on recurring instances is not supported in v1. Edit the series in dayGLANCE',
+      `${taskId} is a recurring-task occurrence: its id is a synthetic per-date view of the series, not a ` +
+      'one-off task. Edit the series or this occurrence with dayglance_update_recurring_task, which asks for the scope.',
     );
   }
 
@@ -358,7 +590,8 @@ export function applyUpdateTask(state, { taskId, set = {}, clear = [], transitio
   const scheduled = tasks.find((t) => t.id === taskId);
   const task = inInbox ?? scheduled;
   if (!task) return err(WRITE_ERROR_CODES.NOT_FOUND, `No task with id ${taskId}`);
-  if (task._native) return err(WRITE_ERROR_CODES.NATIVE_READONLY, NATIVE_MSG(taskId));
+  const readOnly = readOnlyGuard(task, taskId);
+  if (readOnly) return readOnly;
   if (task.isTaskCalendar && task.icalUid) {
     return err(
       WRITE_ERROR_CODES.VALIDATION,
@@ -374,13 +607,6 @@ export function applyUpdateTask(state, { taskId, set = {}, clear = [], transitio
       'tasks only. Edit the other fields, or work with the task before scheduling it.',
     );
   }
-  if (touchesPressure && task.projectId) {
-    return err(
-      WRITE_ERROR_CODES.VALIDATION,
-      'dayGLANCE project tasks do not carry priority or deadline by design: the app manages project work ' +
-      'through the project itself, and the UI disables both controls for them.',
-    );
-  }
 
   let assignedUserSyncIds;
   if (set.assigneeSyncId !== undefined) {
@@ -394,15 +620,25 @@ export function applyUpdateTask(state, { taskId, set = {}, clear = [], transitio
     assignedUserSyncIds = [member.syncId ?? member.id];
   }
 
+  // The project a task belongs to (2026-10-04): set to an existing project's
+  // id, or cleared. The record changes as the UI's project picker changes it,
+  // projectId alone; the Obsidian placement pass reacts to the new home on
+  // its own, exactly as it does to a UI reassignment.
+  if (set.projectId !== undefined && !(state.projects ?? []).some((p) => p && p.id === set.projectId)) {
+    return err(WRITE_ERROR_CODES.NOT_FOUND,
+      `No project with id ${JSON.stringify(set.projectId)}. Enumerate projects with dayglance_get_goal_progress`);
+  }
+
   if (task.transitionId && transitionId && task.transitionId === transitionId) {
     return { ok: true, replayed: true, tasks, unscheduledTasks: unscheduled, task, touched: [], scheduled: !inInbox };
   }
 
-  const next = { ...task, ...(transitionId ? { transitionId } : {}) };
+  const next = { ...task, ...(transitionId ? { transitionId } : {}), ...stampedAt(nowIso) };
   const touched = [];
   const touch = (key) => { if (!touched.includes(key)) touched.push(key); };
 
   if (set.title !== undefined) { next.title = set.title; touch('title'); }
+  if (set.projectId !== undefined) { next.projectId = set.projectId; touch('projectId'); }
   if (set.notes !== undefined) { next.notes = set.notes; touch('notes'); }
   if (set.priority !== undefined) { next.priority = set.priority; touch('priority'); }
   if (set.deadline !== undefined) { next.deadline = set.deadline; touch('deadline'); }
@@ -411,6 +647,7 @@ export function applyUpdateTask(state, { taskId, set = {}, clear = [], transitio
     if (field === 'notes') { next.notes = ''; touch('notes'); }
     else if (field === 'deadline') { delete next.deadline; touch('deadline'); }
     else if (field === 'assignee') { delete next.assignedUserSyncIds; touch('assignedUserSyncIds'); }
+    else if (field === 'project') { delete next.projectId; touch('projectId'); }
   }
 
   if (inInbox) {
@@ -434,22 +671,39 @@ function findWritableBlock(state, tasks, blockId, { operation }) {
   if (parseRecurringInstanceId(blockId)) {
     return err(
       WRITE_ERROR_CODES.VALIDATION,
-      `${blockId} is a recurring-task instance; ${operation} on recurring instances is not supported in v1. Edit the series in dayGLANCE`,
+      `${blockId} is a recurring-task occurrence; ${operation} does not apply to one. Change its time or duration ` +
+      'with dayglance_update_recurring_task, which asks whether the change is for this occurrence or the series.',
     );
   }
   const task = tasks.find((t) => t.id === blockId);
   if (!task) return err(WRITE_ERROR_CODES.NOT_FOUND, `No scheduled block with id ${blockId}`);
-  if (task._native) return err(WRITE_ERROR_CODES.NATIVE_READONLY, NATIVE_MSG(blockId));
+  const readOnly = readOnlyGuard(task, blockId);
+  if (readOnly) return readOnly;
   return { ok: true, task };
+}
+
+/**
+ * THE WRITE'S OWN STAMP (#2083). update_task, move_block and resize_block
+ * used to leave lastModified to the save pass, which diff-stamps against
+ * storage. While a sync apply is being committed that pass skips stamping
+ * altogether (suppressTimestampRef: it cannot tell the apply's rows from an
+ * edit), and it persists the rows as they are, so an MCP write landing in that
+ * window kept the stamp of the copy it replaced forever. At an equal stamp the
+ * merge then decides by content (mergeSync.js breakTimestampTies), not by who
+ * edited last, and the edit could be reverted. Stamping at the write makes the
+ * edit newer than the copy it supersedes whatever the save pass does; when the
+ * pass does run it finds the content changed and stamps the same moment again.
+ */
+function stampedAt(nowIso) {
+  return nowIso ? { lastModified: nowIso } : {};
 }
 
 /**
  * MOVE. Shape transcribed from the canonical drop handler,
  * useDragDrop.js:466-470: `{ ...t, startTime, date, isAllDay: false,
- * transitionId }`. (lastModified is stamped by stampTaskTimestamps in the
- * save pass, exactly as for the UI drop.)
+ * transitionId }`, plus the write's own lastModified (stampedAt, #2083).
  */
-export function applyMoveBlock(state, { blockId, date, startTime, transitionId }) {
+export function applyMoveBlock(state, { blockId, date, startTime, transitionId, nowIso }) {
   const tasks = state.tasks ?? [];
   const found = findWritableBlock(state, tasks, blockId, { operation: 'move_block' });
   if (!found.ok) return found;
@@ -465,7 +719,7 @@ export function applyMoveBlock(state, { blockId, date, startTime, transitionId }
   });
   if (moveConflict) return moveConflict;
 
-  const moved = { ...found.task, startTime, date, isAllDay: false, ...(transitionId ? { transitionId } : {}) };
+  const moved = { ...found.task, startTime, date, isAllDay: false, ...(transitionId ? { transitionId } : {}), ...stampedAt(nowIso) };
   return { ok: true, replayed: false, tasks: tasks.map((t) => (t.id === blockId ? moved : t)), task: moved };
 }
 
@@ -475,7 +729,7 @@ export function applyMoveBlock(state, { blockId, date, startTime, transitionId }
  * (the UI resize does not stamp one — noted in the Phase 3 trace) so the
  * emit correlation holds for MCP.
  */
-export function applyResizeBlock(state, { blockId, durationMinutes, transitionId }) {
+export function applyResizeBlock(state, { blockId, durationMinutes, transitionId, nowIso }) {
   const tasks = state.tasks ?? [];
   const found = findWritableBlock(state, tasks, blockId, { operation: 'resize_block' });
   if (!found.ok) return found;
@@ -492,7 +746,7 @@ export function applyResizeBlock(state, { blockId, durationMinutes, transitionId
   });
   if (resizeConflict) return resizeConflict;
 
-  const resized = { ...found.task, duration: durationMinutes, ...(transitionId ? { transitionId } : {}) };
+  const resized = { ...found.task, duration: durationMinutes, ...(transitionId ? { transitionId } : {}), ...stampedAt(nowIso) };
   return { ok: true, replayed: false, tasks: tasks.map((t) => (t.id === blockId ? resized : t)), task: resized };
 }
 
@@ -518,6 +772,81 @@ export function applyResizeBlock(state, { blockId, durationMinutes, transitionId
  *    flip without the network half would desync the user's CalDAV server. A
  *    pure module cannot do the network half — v1 rejects.
  */
+/**
+ * The task a subtask write targets: not a recurring instance (the UI edits a
+ * template's subtasks through the instance, but the MCP surface treats the
+ * series as app-managed, like update_task does), not a routine, not a
+ * device event. Returns the task and which list holds it.
+ */
+function findSubtaskHost(state, taskId, operation) {
+  if (parseRecurringInstanceId(taskId)) {
+    return err(
+      WRITE_ERROR_CODES.VALIDATION,
+      `${taskId} is a recurring-task instance: ${operation} on recurring series is not supported over MCP. Edit the series in dayGLANCE`,
+    );
+  }
+  const routineRejection = routineGuard(state, taskId, operation);
+  if (routineRejection) return routineRejection;
+  const inInbox = (state.unscheduledTasks ?? []).find((t) => t.id === taskId);
+  const scheduled = (state.tasks ?? []).find((t) => t.id === taskId);
+  const task = inInbox ?? scheduled;
+  if (!task) return err(WRITE_ERROR_CODES.NOT_FOUND, `No task with id ${taskId}`);
+  const readOnly = readOnlyGuard(task, taskId);
+  if (readOnly) return readOnly;
+  return { ok: true, task, inInbox: !!inInbox };
+}
+
+function replaceTask(state, taskId, inInbox, next) {
+  const tasks = state.tasks ?? [];
+  const unscheduled = state.unscheduledTasks ?? [];
+  return inInbox
+    ? { tasks, unscheduledTasks: unscheduled.map((t) => (t.id === taskId ? next : t)) }
+    : { tasks: tasks.map((t) => (t.id === taskId ? next : t)), unscheduledTasks: unscheduled };
+}
+
+/**
+ * ADD SUBTASK. Shape transcribed from useTaskActions.js addSubtask: a new
+ * { id, title, completed: false } appended to the task's subtasks. Idempotent
+ * on `subtaskId` (derived from the idempotency key by the caller).
+ */
+export function applyAddSubtask(state, { taskId, subtaskId, title, nowIso }) {
+  const trimmed = typeof title === 'string' ? title.trim() : '';
+  if (!trimmed) return err(WRITE_ERROR_CODES.VALIDATION, 'title must be a non-empty string');
+  const host = findSubtaskHost(state, taskId, 'adding a subtask');
+  if (!host.ok) return host;
+  const existing = (host.task.subtasks || []).find((st) => st.id === subtaskId);
+  if (existing) return { ok: true, replayed: true, task: host.task, subtask: existing, scheduled: !host.inInbox, ...replaceTask(state, taskId, host.inInbox, host.task) };
+  const subtask = { id: subtaskId, title: trimmed, completed: false };
+  const next = { ...host.task, subtasks: [...(host.task.subtasks || []), subtask], lastModified: nowIso };
+  return { ok: true, replayed: false, task: next, subtask, scheduled: !host.inInbox, ...replaceTask(state, taskId, host.inInbox, next) };
+}
+
+/**
+ * UPDATE SUBTASK. Title (useTaskActions.js updateSubtaskTitle) and completion
+ * (toggleSubtask, as a setter rather than a toggle so a retry is safe), each
+ * only when given. Returns the touched subtask keys for the undo descriptor.
+ */
+export function applyUpdateSubtask(state, { taskId, subtaskId, set = {}, nowIso }) {
+  const host = findSubtaskHost(state, taskId, 'editing a subtask');
+  if (!host.ok) return host;
+  const current = (host.task.subtasks || []).find((st) => st.id === subtaskId);
+  if (!current) return err(WRITE_ERROR_CODES.NOT_FOUND, `No subtask with id ${JSON.stringify(subtaskId)} on task ${taskId}`);
+  if (set.title !== undefined && (typeof set.title !== 'string' || !set.title.trim())) {
+    return err(WRITE_ERROR_CODES.VALIDATION, 'title must be a non-empty string');
+  }
+  const touched = [];
+  const subtask = { ...current };
+  if (set.title !== undefined && set.title.trim() !== current.title) { subtask.title = set.title.trim(); touched.push('title'); }
+  if (set.completed !== undefined && !!set.completed !== !!current.completed) { subtask.completed = !!set.completed; touched.push('completed'); }
+  if (touched.length === 0) return { ok: true, replayed: true, task: host.task, subtask: current, touched, scheduled: !host.inInbox, ...replaceTask(state, taskId, host.inInbox, host.task) };
+  const next = {
+    ...host.task,
+    subtasks: host.task.subtasks.map((st) => (st.id === subtaskId ? subtask : st)),
+    lastModified: nowIso,
+  };
+  return { ok: true, replayed: false, task: next, subtask, touched, scheduled: !host.inInbox, ...replaceTask(state, taskId, host.inInbox, next) };
+}
+
 /**
  * BULK UNDO (§4.3): apply a list of reversal ops produced by the main
  * process's write journal (electron/mcpJournal.ts buildUndoPlan). Ops arrive
@@ -556,6 +885,7 @@ export function applyUndoOps(state, ops, { nowIso }) {
   let unscheduled = state.unscheduledTasks ?? [];
   let recurring = state.recurringTasks ?? [];
   let recycleBin = state.recycleBin ?? [];
+  const tombstones = [];
   let undone = 0;
   let skipped = 0;
 
@@ -636,6 +966,23 @@ export function applyUndoOps(state, ops, { nowIso }) {
         undone += 1;
         break;
       }
+      case 'remove_created_subtask':
+      case 'restore_subtask_fields': {
+        // Subtask ops touch the host task only: the subtask the agent added is
+        // dropped, or its touched fields are put back.
+        const inInbox = unscheduled.find((t) => t.id === op.taskId);
+        const scheduled = tasks.find((t) => t.id === op.taskId);
+        const task = inInbox ?? scheduled;
+        if (!task || task._native || !(task.subtasks || []).some((st) => st.id === op.subtaskId)) { skipped += 1; break; }
+        const subtasks = op.kind === 'remove_created_subtask'
+          ? task.subtasks.filter((st) => st.id !== op.subtaskId)
+          : task.subtasks.map((st) => (st.id === op.subtaskId ? { ...st, ...(op.before ?? {}) } : st));
+        const next = { ...task, subtasks, lastModified: nowIso };
+        if (inInbox) unscheduled = unscheduled.map((t) => (t.id === op.taskId ? next : t));
+        else tasks = tasks.map((t) => (t.id === op.taskId ? next : t));
+        undone += 1;
+        break;
+      }
       case 'restore_recurring_completion': {
         const template = recurring.find((t) => t.id === op.templateId);
         if (!template) { skipped += 1; break; }
@@ -653,12 +1000,41 @@ export function applyUndoOps(state, ops, { nowIso }) {
         undone += 1;
         break;
       }
+      case 'remove_created_series': {
+        // A series leaves the way the app's own series delete does: the
+        // template goes and its id is tombstoned (the caller writes
+        // `tombstones`), so sync does not bring it back. Templates have no
+        // recycle-bin form in the app, so there is none here either.
+        const template = recurring.find((t) => String(t.id) === String(op.templateId));
+        if (!template) { skipped += 1; break; }
+        recurring = recurring.filter((t) => t !== template);
+        tombstones.push(String(template.id));
+        undone += 1;
+        break;
+      }
+      case 'restore_series_fields': {
+        // Reverses update_recurring_task: the touched template fields and the
+        // exception dates it changed go back. Completions stay as they are.
+        const template = recurring.find((t) => String(t.id) === String(op.templateId));
+        if (!template || !op.before) { skipped += 1; break; }
+        const next = { ...template, ...op.before, lastModified: nowIso };
+        for (const key of op.absentBefore ?? []) delete next[key];
+        const exceptions = { ...(template.exceptions || {}) };
+        for (const [d, exc] of Object.entries(op.exceptionsBefore ?? {})) {
+          if (exc === null) delete exceptions[d];
+          else exceptions[d] = exc;
+        }
+        next.exceptions = exceptions;
+        recurring = recurring.map((t) => (t === template ? next : t));
+        undone += 1;
+        break;
+      }
       default:
         skipped += 1;
     }
   }
 
-  return { ok: true, tasks, unscheduledTasks: unscheduled, recurringTasks: recurring, recycleBin, undone, skipped };
+  return { ok: true, tasks, unscheduledTasks: unscheduled, recurringTasks: recurring, recycleBin, tombstones, undone, skipped };
 }
 
 export function applySetCompletion(state, { taskId, completed, transitionId, nowIso }) {
@@ -697,7 +1073,8 @@ export function applySetCompletion(state, { taskId, completed, transitionId, now
   const scheduled = tasks.find((t) => t.id === taskId);
   const task = inInbox ?? scheduled;
   if (!task) return err(WRITE_ERROR_CODES.NOT_FOUND, `No task with id ${taskId}`);
-  if (task._native) return err(WRITE_ERROR_CODES.NATIVE_READONLY, NATIVE_MSG(taskId));
+  const readOnly = readOnlyGuard(task, taskId);
+  if (readOnly) return readOnly;
   if (task.isTaskCalendar && task.icalUid) {
     return err(
       WRITE_ERROR_CODES.VALIDATION,

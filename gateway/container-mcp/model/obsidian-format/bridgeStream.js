@@ -1,0 +1,580 @@
+// BRIDGE INTENT STREAM — wire format and pure application
+// (Obsidian build-out Phase 6; spec §3.6 as amended and §3.4).
+//
+// Format, never policy: this module defines WHAT rides the stream — the
+// sealed row envelope, the intent and observation shapes, and how an intent
+// applies to a file's text — and nothing about WHEN to emit, who is
+// authoritative, or what wins on divergence. Those live with the consumers.
+//
+// THE STREAM (spec §3.6, amended): semantic OUTBOUND, observational
+// INBOUND. dayGLANCE emits semantic intents (it knows exactly what changed);
+// the plugin applies them to the vault and emits back plain observations of
+// file state (inferring semantics from vault edits is the job dayGLANCE's
+// scan-and-merge pipeline already does). Rows live in the app-scoped
+// GLANCEvault namespace BRIDGE_VAULT_APP — fully separate from dayGLANCE's
+// own sync rows.
+//
+// ROW ENVELOPES are AES-256-GCM under the bridge subkey (§3.4) with a fresh
+// per-message IV: {v:1, iv, ct}, all base64. One deliberate exception: the
+// PAIRING_META row is PLAINTEXT JSON — it carries the pairing salt that
+// other dayGLANCE devices need BEFORE they can derive the subkey (an HKDF
+// salt is not a secret; the subkey's security rests on the root key).
+//
+// INTENT payloads (sealed): { v:1, kind:'intent', type, intentId, createdAt,
+// ...fields }. intentId is assigned AT WRITE TIME by the emitter and
+// persisted with the queued intent — the GLANCEintents transitionId lesson:
+// an id minted late doesn't survive the transport. Types:
+//   task_state       {path, date, obsidianRawTitle, completed, startTime,
+//                     duration, targetDate?, taskHeading, blockId,
+//                     completedAt, completionFormat}
+//   task_retitle     task_state fields + newRawTitle (a retitle write also
+//                     carries the state — one write, one intent)
+//   task_append      {path, date, task:{title,startTime,duration,isAllDay,
+//                     date,blockId}, heading, template}
+//   daily_note_write {path, content}
+//   wiki_note_write  {noteName, content, newNotesFolder, mode?} — mode
+//                     'create_or_append' appends to an existing note
+//                     instead of replacing it (task notes into the vault)
+//   completion_log_append {path, date, heading, template, entry} — entry is
+//                     the FINISHED log line, formatted by the emitter
+//                     (completionLog.js), inserted at section end
+//   project_note_link   {path, targetId} — write the `dayglance-id` key
+//                     (PROJECT_NOTE_ID_KEY) into the note's frontmatter
+//                     (companion §4.3, ruling A); applied by the PLUGIN via
+//                     Obsidian's frontmatter API, never by the text applier
+//                     below (which reports it unsupported)
+//   project_note_unlink {path, targetId} — remove that key when it names
+//                     targetId
+//   project_note_create {targetId, kind:'project'|'goal', title, goalId?,
+//                     goalTitle?, description?} — create the entity's note
+//                     where the plugin's layout setting says
+//                     (projectNotes.js), from its template through the §4.4
+//                     ladder, with the notes box in the description slot,
+//                     and link it; idempotent (an already-linked target is a
+//                     no-op)
+//   project_note_description {path, targetId, content, mode, base?, at?} —
+//                     the entity's notes box IS the section under its
+//                     note's title (noteDescription.js, owner ruling
+//                     2026-10-03). mode 'replace' is the panel's save and
+//                     carries `base`, the section's hash as loaded: a
+//                     section that moved since is kept and the dayGLANCE
+//                     text appended as a dated callout. mode 'merge' is the
+//                     one-time migration of an existing notes box: a blank
+//                     or placeholder section is replaced, text the user has
+//                     stays with the box below it.
+// wiki_note_write may carry `base` too (the whole note's hash as loaded):
+// a note that moved since is left as it is, and said so in the console.
+// `path` is always vault-root-relative and resolved BY THE EMITTER (the
+// emitter owns the dailyNotesPath/pattern config; the applier needs no
+// dayGLANCE settings). wiki_note_write is the one type without a resolved
+// path: wikilink resolution ("an existing note anywhere in the vault wins")
+// requires the vault index, so the APPLIER resolves it — Obsidian's
+// metadataCache is exactly that index.
+//
+// OBSERVATION payloads (sealed): { v:1, kind:'observation', path,
+// content|null, deleted?, mtime, observedAt }. One row per path, upserted
+// (entityId from observationEntityId), so the row IS the latest state.
+// LINK observations (companion §4.3): { v:1, kind:'observation', link:true,
+// targetId, path, deleted?, unlinked?, previousPath?, observedAt } — one row
+// per TARGET id (linkObservationEntityId), upserted, so a rename simply
+// replaces the row's path and a deletion replaces it with deleted:true.
+//
+// APPLYING IS A PURE FUNCTION of (current file text, intent) — the spec's
+// convergence requirement. It is also IDEMPOTENT: applying an intent to a
+// file that already carries its outcome changes nothing. Idempotent replay
+// is the crash story — an applier that dies between applying a batch and
+// persisting its applied-ID set simply re-applies as no-ops.
+
+import { updateTaskLines, sortTaskLinesInSection, buildObsidianTaskLine, splitNoteLines } from './taskLines.js';
+import { noteTextHash, extractNoteDescription, replaceNoteDescription, mergeNoteDescription, appendDescriptionConflict } from './noteDescription.js';
+import { splitBlockId } from './identity.js';
+import { withCreationFrontmatter } from './frontmatter.js';
+import { renderNoteTemplateSubset } from './projectNotes.js';
+
+/**
+ * The body a daily note is CREATED from when an intent finds no note: the
+ * app's text template with the §4.4 subset filled — `{{date}}`, and
+ * `{{title}}` as the note's name (the date under the default pattern).
+ * Companion §4.4 build record (2026-09-06): the same substitution runs at
+ * every creation point (the FSA and native appends on the direct tier, the
+ * two creating intents here), so a template reads the same wherever the
+ * note is born. A template NOTE configured in the plugin renders through
+ * the full ladder at the plugin's creation point instead; this is the
+ * fallback body everyone gets who never sets one.
+ */
+export function dailyNoteCreationBody(template, date, path = null) {
+  const stem = typeof path === 'string' && path ? path.split('/').pop().replace(/\.md$/i, '') : String(date ?? '');
+  return withCreationFrontmatter(renderNoteTemplateSubset(template || '', { title: stem, date: String(date ?? '') }), date);
+}
+import { validateWikiNoteName } from './filename.js';
+
+// The GLANCEvault app namespace for everything the bridge stores.
+export const BRIDGE_VAULT_APP = 'dayglance-bridge';
+// Well-known rows. meta:pairing is written by the plugin on pairing (the
+// one plaintext row — see above); meta:config is written by dayGLANCE so
+// the plugin can classify daily notes without knowing dayGLANCE settings.
+export const BRIDGE_PAIRING_META_ID = 'meta:pairing';
+export const BRIDGE_CONFIG_META_ID = 'meta:config';
+export const BRIDGE_INTENT_PREFIX = 'int:';
+// The applier lease (plaintext, like meta:pairing): which plugin copy applies
+// intents for this vault right now. See the plugin's drain (bridge.ts, "ONE
+// APPLIER PER VAULT") and buildout spec 2.8 (2026-09-13).
+export const BRIDGE_APPLIER_META_ID = 'meta:applier';
+export const BRIDGE_OBSERVATION_PREFIX = 'obs:';
+// ACTION rows (companion spec 4.2, the sidebar view): plugin-authored,
+// dayGLANCE-consumed — the reverse of intents. The plugin READS the data
+// plane (its own root key) but never WRITES it; a sidebar completion is an
+// action row dayGLANCE applies itself, so dayGLANCE stays the data plane's
+// single writer. Payload: { v:1, kind:'action', type:'task_complete',
+// actionId, taskId | (templateId, instanceDate), completedAt, createdAt }.
+// dayGLANCE deletes an action row after applying it (idempotent by actionId).
+export const BRIDGE_ACTION_PREFIX = 'act:';
+
+// Projection rows (companion 4.2, calendar events): dayGLANCE publishes a
+// derived, device-authored view of data it deliberately does NOT sync — the
+// read-only calendar events the payload builder excludes — so the plugin's
+// agenda can show them without becoming a calendar client. One upserted row
+// per publishing device, `proj:calendar:<deviceId>`, sealed under the
+// pairing subkey. Payload `{v:1, kind:'projection', type:'calendar',
+// deviceId, from, to, publishedAt, events:[…]}`. Readers union the rows and
+// prefer the freshest copy of an event id. Never deleted by the reader.
+export const BRIDGE_PROJECTION_PREFIX = 'proj:';
+// COPY STATUS rows (2026-09-29, the fleet-wide half of the pairing split):
+// one PLAINTEXT row per plugin copy, `meta:copy:<deviceId>`, written by that
+// copy on load, on every pairing verdict or held-count change, and renewed
+// hourly. Payload `{v:1, kind:'copy', deviceId, name, platform,
+// pluginVersion, generation, pairedAt, stale, staleAgainst?, held, ts}`.
+// Every dayGLANCE device reads the stream, so every app instance can say
+// which copies of the vault are current and which are behind, whichever
+// machine the user is sitting at. Plaintext because it carries nothing the
+// meta:pairing row does not already publish plus a hostname the owner
+// chose to share with their own server. A copy deletes its row on unpair;
+// readers age out a row not renewed for a week.
+export const BRIDGE_COPY_PREFIX = 'meta:copy:';
+export const bridgeCopyStatusId = (deviceId) => `${BRIDGE_COPY_PREFIX}${String(deviceId)}`;
+// Project and goal notes (companion §4.3, ruling A): the frontmatter key that
+// holds the entity's dayGLANCE id — the durable identity of the link; the
+// path on the entity record is only the cached locator.
+export const PROJECT_NOTE_ID_KEY = 'dayglance-id';
+/** The link observation row for one project or goal id (see the header). */
+export const linkObservationEntityId = (targetId) => `${BRIDGE_OBSERVATION_PREFIX}link:${String(targetId)}`;
+export const bridgeCalendarProjectionId = (deviceId) => `${BRIDGE_PROJECTION_PREFIX}calendar:${deviceId}`;
+
+const enc = new TextEncoder();
+// Chunked bytes→base64: String.fromCharCode(...bytes) blows the argument
+// limit (~64k) on large payloads, and an observation carries a whole note.
+const b64 = (bytes) => {
+  const u8 = new Uint8Array(bytes);
+  let s = '';
+  for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode(...u8.subarray(i, i + 0x8000));
+  return btoa(s);
+};
+const unb64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+const b64Text = (s) => b64(enc.encode(s));
+const unb64Text = (t) => new TextDecoder().decode(unb64(t));
+
+/** Assigned at write time, persisted with the intent. */
+/**
+ * The FAIL-CLOSED gate for normalize-then-observe (§3.10 ruling 7): the
+ * plugin stamps untagged task lines before reporting a daily note ONLY when
+ * the config row dayGLANCE published carries `blockIdWrites` EXACTLY true.
+ * Everything else — no config row seen yet (null/undefined), a row from a
+ * dayGLANCE build predating the field, an explicit false, any merely-truthy
+ * value — means NO stamping: not stamping is recoverable (dayGLANCE's own
+ * stamp-on-sight backstop still covers the line), stamping against the
+ * user's write-release setting is not. Kept here, beside the row codec, so
+ * the decision is one pinned function rather than an inline comparison that
+ * could drift.
+ *
+ * @param {{blockIdWrites?: unknown}|null|undefined} config  the decoded meta:config row
+ * @returns {boolean}
+ */
+export function bridgeConfigAllowsStamping(config) {
+  return config != null && config.blockIdWrites === true;
+}
+
+export function mintIntentId() {
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
+  } catch { /* fall through */ }
+  return `dgi-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
+/** Stable row id for a path's observation: obs:<sha256 hex, 32 chars>. */
+export async function observationEntityId(path) {
+  const digest = await crypto.subtle.digest('SHA-256', enc.encode(path));
+  const hex = [...new Uint8Array(digest)].map((x) => x.toString(16).padStart(2, '0')).join('');
+  return `${BRIDGE_OBSERVATION_PREFIX}${hex.slice(0, 32)}`;
+}
+
+// THE WIRE IS BASE64, NON-NEGOTIABLY: GLANCEvault's batch endpoint decodes
+// every row envelope with Buffer.from(envelope, 'base64') and stores the
+// BYTES, and list/get returns those bytes re-encoded as base64. Node's
+// base64 decoder never rejects — a non-base64 envelope (the first shape of
+// this module was raw JSON text) is silently shredded into garbage at
+// write time. So every envelope this module produces is a single valid
+// base64 string, and every reader decodes base64 first; the server round
+// trip is then byte-exact identity (pinned in the tests against the
+// server's exact Buffer semantics).
+
+/**
+ * Seal a payload into a row envelope under the bridge subkey.
+ *
+ * THE GENERATION TAG (2026-09-29, the pairing split). `generation` is the
+ * pairing generation the subkey was derived from, carried in the CLEAR
+ * beside the ciphertext (it is the pairing salt, which the plaintext
+ * meta:pairing row already publishes: not a secret). A reader that cannot
+ * open the envelope can then tell "sealed under a pairing I do not hold"
+ * from "corrupt", and the plugin's drain holds the first instead of
+ * deleting it as garbage. Optional and additive: an envelope without the
+ * tag reads exactly as before.
+ */
+export async function sealBridgeEnvelope(subkey, payload, generation = null) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv }, subkey, enc.encode(JSON.stringify(payload)),
+  );
+  const gen = typeof generation === 'string' && generation ? { gen: generation } : {};
+  return b64Text(JSON.stringify({ v: 1, iv: b64(iv), ct: b64(ct), ...gen }));
+}
+
+/**
+ * The pairing generation an envelope was sealed under, read without the
+ * key: the clear `gen` tag, or null for an envelope that carries none (a
+ * writer predating the tag) or is not an envelope at all.
+ */
+export function readBridgeEnvelopeGeneration(text) {
+  try {
+    const envelope = JSON.parse(unb64Text(text));
+    if (!envelope || envelope.v !== 1) return null;
+    return typeof envelope.gen === 'string' && envelope.gen ? envelope.gen : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Open a row envelope. Returns the payload, or null for ANYTHING unusable —
+ * malformed, tampered, or sealed under a different subkey generation (a
+ * revoked pairing's rows correctly become unreadable after rotation).
+ */
+export async function openBridgeEnvelope(subkey, text) {
+  try {
+    const envelope = JSON.parse(unb64Text(text));
+    if (!envelope || envelope.v !== 1) return null;
+    const pt = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: unb64(envelope.iv) }, subkey, unb64(envelope.ct),
+    );
+    return JSON.parse(new TextDecoder().decode(pt));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Wire-encode a PLAINTEXT row (the meta:pairing row — deliberately not
+ * encrypted, see the module header; the salt it carries is not a secret).
+ * Base64 is transport framing here, not protection.
+ */
+export function encodePlainBridgeRow(payload) {
+  return b64Text(JSON.stringify(payload));
+}
+
+/** Decode a plaintext row; null for anything unusable. */
+export function decodePlainBridgeRow(text) {
+  try {
+    return JSON.parse(unb64Text(text));
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Pure intent application
+// ---------------------------------------------------------------------------
+
+/**
+ * Apply one intent to a file's current text. PURE and IDEMPOTENT (see the
+ * module header — this is the convergence contract).
+ *
+ * @param {string|null} currentText — the target file's text, or null when
+ *   the file does not exist.
+ * @param {object} intent — a decrypted intent payload.
+ * @returns {{ text: string|null, changed: boolean }
+ *          |{ error: 'unportable_name', reason: string }
+ *          |{ unsupported: true }}
+ *   `changed` false means the file already carries the outcome (or there is
+ *   nothing to apply to); `text` is the full new content when changed.
+ *   `unsupported` marks a type this build doesn't know — the applier skips
+ *   it without failing the batch (forward compatibility).
+ */
+/** Paragraph blocks of a text: runs of non-blank lines, each line trimmed right. */
+function textBlocks(text) {
+  const out = [];
+  let cur = [];
+  for (const raw of String(text ?? '').replace(/\r\n?/g, '\n').split('\n')) {
+    const line = raw.replace(/\s+$/, '');
+    if (line.trim() === '') { if (cur.length) { out.push(cur.join('\n')); cur = []; } }
+    else cur.push(line);
+  }
+  if (cur.length) out.push(cur.join('\n'));
+  return out;
+}
+
+/**
+ * True when the body's paragraph blocks appear in the note as a consecutive
+ * run of whole blocks (the create_or_append idempotency guard).
+ */
+export function noteContainsBlock(text, body) {
+  const want = textBlocks(body);
+  if (want.length === 0) return true;
+  const have = textBlocks(text);
+  for (let i = 0; i + want.length <= have.length; i++) {
+    let ok = true;
+    for (let j = 0; j < want.length; j++) if (have[i + j] !== want[j]) { ok = false; break; }
+    if (ok) return true;
+  }
+  return false;
+}
+
+export function applyBridgeIntent(currentText, intent) {
+  switch (intent?.type) {
+    case 'task_state':
+    case 'task_retitle': {
+      // Mirrors writeTaskStateToFile's composition: a missing file is the
+      // benign nothing-to-update case (the scan reconciles); a line that
+      // moved off obsidianRawTitle keeps ITS title (updateTaskLines'
+      // built-in guard). FORMAT/POLICY SEAM: no onTitleConflict callback is
+      // passed here — the applier is a transport, and conflict RESOLUTION
+      // stays with dayGLANCE's scan-time policy, which sees the resulting
+      // line like any other vault edit.
+      if (currentText === null) return { text: null, changed: false };
+      // Every branch splits and re-joins with the note's OWN line ending
+      // (splitNoteLines): a CRLF note stays CRLF, and no line compares
+      // against a dangling '\r' (format-package audit low, 2026-09-06).
+      const { lines, eol } = splitNoteLines(currentText);
+      const updated = updateTaskLines(lines, {
+        obsidianRawTitle: intent.obsidianRawTitle,
+        completed: intent.completed,
+        startTime: intent.startTime ?? null,
+        newRawTitle: intent.type === 'task_retitle' ? intent.newRawTitle : undefined,
+        duration: intent.duration ?? null,
+        targetDate: intent.targetDate ?? undefined,
+        noteDate: intent.date ?? null,
+        blockId: intent.blockId ?? null,
+        onTitleConflict: null,
+        completedAt: intent.completedAt ?? null,
+        completionFormat: intent.completionFormat ?? null,
+      });
+      if (!updated) return { text: currentText, changed: false };
+      const finalLines = intent.taskHeading
+        ? sortTaskLinesInSection(lines, intent.taskHeading.trim(), intent.date)
+        : lines;
+      const text = finalLines.join(eol);
+      return { text, changed: text !== currentText };
+    }
+
+    case 'task_append': {
+      // Mirrors appendTaskToDailyNote's composition, plus the idempotency
+      // guard the transport gets for free from being called once: a line
+      // already carrying the task's block id (or the exact line, for a
+      // tokenless task) means this intent has landed — replay is a no-op.
+      //
+      // NOTE TASK (companion §4.3, project routing): `noteTask: true`
+      // targets a linked project or goal note rather than a daily note.
+      // Three differences, all because the note is the user's document:
+      // a missing note is never created (a deleted project note stays
+      // deleted; dayGLANCE's missing-note state is the surface), the line
+      // goes at the END of the heading's section rather than the top, and
+      // the section is never sorted.
+      const noteTask = intent.noteTask === true;
+      if (noteTask && currentText === null) return { text: null, changed: false };
+      const taskLine = buildObsidianTaskLine(intent.task, intent.date);
+      if (currentText !== null) {
+        const existingLines = splitNoteLines(currentText).lines;
+        // Block ids are stored bare; the vault token is ^dg-<id> (identity.js).
+        // THE REAL CONDITION is whether the line WE WOULD WRITE carries the
+        // token (audit fix H3): buildObsidianTaskLine routes the token
+        // through blockIdSuffix, which REFUSES it for titles carrying ^dg-
+        // anywhere or ending in a foreign ^ref — so keying the landed-check
+        // on intent.task.blockId alone made replays of such appends
+        // non-idempotent: the appended line never carried the token, the
+        // token check never matched, the exact-line fallback was skipped,
+        // and every crash-replay appended the line AGAIN — breaking the
+        // module contract ("dying between applying a batch and persisting
+        // the applied-ID set replays as no-ops") in exactly the scenario it
+        // exists for. Token comparisons also tolerate trailing whitespace a
+        // human may have left on the landed line.
+        const blockToken = intent.task?.blockId && taskLine.endsWith(` ^dg-${intent.task.blockId}`)
+          ? ` ^dg-${intent.task.blockId}`
+          : null;
+        const landed = blockToken
+          ? existingLines.some((l) => l.trimEnd().endsWith(blockToken))
+          : existingLines.some((l) => l.trimEnd() === taskLine.trimEnd());
+        if (landed) return { text: currentText, changed: false };
+      }
+      const base = currentText !== null
+        ? currentText
+        : dailyNoteCreationBody(intent.template, intent.date, intent.path);
+      const { lines, eol } = splitNoteLines(base);
+      const heading = intent.heading;
+      if (heading && heading.trim()) {
+        const headingStr = heading.trim();
+        const headingLineIdx = lines.findIndex((l) => l === headingStr);
+        if (headingLineIdx !== -1 && noteTask) {
+          // Section end: after the last non-blank line before the next
+          // heading (or the end of the note).
+          let end = headingLineIdx + 1;
+          while (end < lines.length && !/^#{1,6}\s/.test(lines[end])) end++;
+          let at = end;
+          while (at > headingLineIdx + 1 && lines[at - 1].trim() === '') at--;
+          lines.splice(at, 0, taskLine);
+        } else if (headingLineIdx !== -1) {
+          lines.splice(headingLineIdx + 1, 0, taskLine);
+        } else {
+          if (lines[lines.length - 1] !== '') lines.push('');
+          lines.push(headingStr, taskLine, '');
+        }
+      } else {
+        if (lines[lines.length - 1] !== '') lines.push('');
+        lines.push(taskLine);
+      }
+      const sorted = heading && heading.trim() && !noteTask
+        ? sortTaskLinesInSection(lines, heading.trim(), intent.date)
+        : lines;
+      return { text: sorted.join(eol), changed: true };
+    }
+
+    case 'task_remove': {
+      // The line leaves the note (companion §4.3, project routing: a task
+      // unassigned from a linked project, or moved to another project's
+      // note). Matched by block id — the only identity a line has once it
+      // is stamped — or, for a tokenless line, by its exact raw title.
+      // Idempotent: no matching line means the removal has landed. Only
+      // the line goes; the section, its heading and its other lines are the
+      // user's.
+      if (currentText === null) return { text: null, changed: false };
+      const { lines, eol } = splitNoteLines(currentText);
+      const wantId = intent.blockId ? String(intent.blockId) : null;
+      const wantRaw = typeof intent.obsidianRawTitle === 'string' ? intent.obsidianRawTitle.trim() : null;
+      const idx = lines.findIndex((line) => {
+        const m = line.match(/^\s*- \[[ xX]\]\s+(.+)$/);
+        if (!m) return false;
+        const { text: body, blockId: lineId } = splitBlockId(m[1].trim());
+        if (wantId) return lineId === wantId;
+        return !lineId && wantRaw !== null && body.trim() === wantRaw;
+      });
+      if (idx === -1) return { text: currentText, changed: false };
+      lines.splice(idx, 1);
+      return { text: lines.join(eol), changed: true };
+    }
+
+    case 'completion_log_append': {
+      // Append-only completion record (companion spec 4.1). The entry is a
+      // NON-TASK line by ruled design — the scan-collision constraint: the
+      // task parser and the stamper must never be able to match it, so it
+      // carries no checkbox, no block token, and is never section-sorted.
+      // Dedupe is by exact line (trimEnd-tolerant), which is also the
+      // crash-replay idempotence story: re-applying the same intent to its
+      // own output is a no-op. Entries INSERT AT SECTION END — the log is
+      // chronological, newest last, unlike task_append's insert-at-top.
+      const entry = typeof intent.entry === 'string' ? intent.entry.trim() : '';
+      // A multi-line entry could smuggle a task-shaped line past the
+      // formatter's guarantee; refuse rather than write it.
+      if (!entry || entry.includes('\n')) return { text: currentText, changed: false };
+      if (currentText !== null) {
+        const landed = splitNoteLines(currentText).lines.some((l) => l.trimEnd() === entry);
+        if (landed) return { text: currentText, changed: false };
+      }
+      const logBase = currentText !== null
+        ? currentText
+        : dailyNoteCreationBody(intent.template, intent.date, intent.path);
+      const { lines: logLines, eol: logEol } = splitNoteLines(logBase);
+      const logHeading = (intent.heading || '').trim();
+      if (!logHeading) return { text: currentText, changed: false }; // the log always has a home
+      const logHeadingIdx = logLines.findIndex((l) => l === logHeading);
+      if (logHeadingIdx === -1) {
+        if (logLines[logLines.length - 1] !== '') logLines.push('');
+        logLines.push(logHeading, entry, '');
+      } else {
+        // Walk to the section's end (next heading or EOF), then place the
+        // entry after the last non-blank line so it joins the list and any
+        // trailing blank separation stays put.
+        let sectionEnd = logLines.length;
+        for (let i = logHeadingIdx + 1; i < logLines.length; i++) {
+          if (/^#{1,6}\s/.test(logLines[i])) { sectionEnd = i; break; }
+        }
+        let insertAt = logHeadingIdx + 1;
+        for (let i = logHeadingIdx + 1; i < sectionEnd; i++) {
+          if (logLines[i].trim() !== '') insertAt = i + 1;
+        }
+        logLines.splice(insertAt, 0, entry);
+      }
+      return { text: logLines.join(logEol), changed: true };
+    }
+
+    case 'daily_note_write': {
+      const text = intent.content ?? '';
+      return { text, changed: currentText === null || text !== currentText };
+    }
+
+    case 'wiki_note_write': {
+      // Creation-only decoration and the creation-only portability gate —
+      // the same refuse-creation/permit-existing rule as writeWikiNote. The
+      // APPLIER resolves the wikilink (existing note anywhere in the vault
+      // wins; otherwise create under intent.newNotesFolder) and passes that
+      // file's text, or null when creating.
+      if (currentText === null) {
+        const reason = validateWikiNoteName(intent.noteName);
+        if (reason) return { error: 'unportable_name', reason };
+        return { text: withCreationFrontmatter(intent.content), changed: true };
+      }
+      if (intent.mode === 'create_or_append') {
+        // TASK NOTES INTO THE VAULT (companion §4.3, 2026-09-14): the note
+        // is named after a task, so one that already exists under that
+        // name is someone's. The notes are appended, never written over.
+        // Idempotent on BLOCK boundaries (2026-09-17, report F1): the body's
+        // paragraphs already present as a consecutive run (a second device's
+        // copy of the same migration, a retried enqueue) change nothing; a
+        // short body that merely occurs inside a longer line is appended.
+        // The skip is logged so nothing vanishes without a trace.
+        const body = String(intent.content ?? '').trim();
+        if (!body) return { text: currentText, changed: false };
+        if (noteContainsBlock(currentText, body)) {
+          console.info(`dayGLANCE bridge: notes already present in ${String(intent.noteName ?? '')}, not appended`);
+          return { text: currentText, changed: false };
+        }
+        return { text: `${currentText.replace(/\s+$/, '')}\n\n${body}\n`, changed: true };
+      }
+      if (currentText !== null && typeof intent.base === 'string' && intent.base && noteTextHash(currentText) !== intent.base) {
+        // REFUSE ON CHANGE (owner ruling 2026-10-03): the note moved since
+        // dayGLANCE loaded it. dayGLANCE re-reads before sending, so this is
+        // a race of seconds or a sync lag; the vault's text stands.
+        console.info(`dayGLANCE bridge: ${String(intent.noteName ?? '')} changed since dayGLANCE loaded it; not overwritten`);
+        return { text: currentText, changed: false };
+      }
+      const text = intent.content;
+      return { text, changed: text !== currentText };
+    }
+
+    case 'project_note_description': {
+      // The description section (noteDescription.js). A missing note is the
+      // benign nothing-to-update case: the link observation reconciles it.
+      if (currentText === null) return { text: null, changed: false };
+      const content = String(intent.content ?? '');
+      if (intent.mode === 'merge') return mergeNoteDescription(currentText, content);
+      const base = typeof intent.base === 'string' && intent.base ? intent.base : null;
+      if (base && noteTextHash(extractNoteDescription(currentText)) !== base) {
+        console.info(`dayGLANCE bridge: the description of ${String(intent.path ?? '')} changed since dayGLANCE loaded it; the vault's text kept, the dayGLANCE text added below it`);
+        return appendDescriptionConflict(currentText, content, String(intent.at ?? ''));
+      }
+      const text = replaceNoteDescription(currentText, content);
+      return { text, changed: text !== currentText.replace(/\r\n?/g, '\n') };
+    }
+
+    default:
+      return { unsupported: true };
+  }
+}

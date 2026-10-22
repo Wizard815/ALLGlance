@@ -12,7 +12,8 @@ provider later).
 ## What it reuses (not a reimplementation)
 
 `./model/` is dayGLANCE's **real** pure model, vendored verbatim from
-`apps/dayglance/src/utils` + `packages/agenda-core`:
+`apps/dayglance/src/utils` + the `packages/*` it imports (`agenda-core`,
+`obsidian-format`):
 
 - `mcpReadModel.js` — `handleMcpRequest(state, {method, params})` → `get_day`,
   `get_week`, `list_unscheduled`, `list_users`, `goal_progress`
@@ -73,6 +74,12 @@ When the dayglance submodule updates, refresh `./model/`:
 ```bash
 node scripts/vendor-model.mjs [path-to-apps/dayglance]
 ```
+
+The script follows the import graph from `mcpReadModel.js` and
+`mcpWriteModel.js`, so new upstream imports are picked up automatically;
+`./model/` is regenerated from scratch. It fails on any npm import other than
+`@glance-apps/*` workspace packages and `i18next` (shimmed), since the
+container has no dayGLANCE `node_modules`.
 
 ## Tests
 
