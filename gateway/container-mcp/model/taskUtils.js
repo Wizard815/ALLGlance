@@ -66,7 +66,9 @@ export const TAG_NAME = new RegExp(`^${TAG_START}${TAG_BODY}*$`, 'u');
 // packages/agenda-core mirror this by hand.
 const WEB_ADDRESS = 'https?:\\/\\/[^\\s<>"{}|\\\\^`[\\]]+';
 // Safe to hoist despite the `g` flag: matchAll and replace reset lastIndex.
-const TAG_OR_ADDRESS = new RegExp(`(${WEB_ADDRESS})|#(${TAG_START}${TAG_BODY}*)`, 'gu');
+// Exported for the tag manager's rewrite (utils/tagManager.js), which must
+// read tags exactly as everything else does.
+export const TAG_OR_ADDRESS = new RegExp(`(${WEB_ADDRESS})|#(${TAG_START}${TAG_BODY}*)`, 'gu');
 
 /** The #tags in a text, without the `#`, case kept, web addresses skipped. */
 export const tagsIn = (text) => [...String(text ?? '').matchAll(TAG_OR_ADDRESS)]

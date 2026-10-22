@@ -15,6 +15,14 @@
 // before-state, because this is the only place that still has it: the journal
 // in the main process records it, and bulk undo replays the ops back through
 // applyUndoOps. Replayed writes carry no descriptor (nothing changed).
+//
+// RETIRED IDS RESOLVE TO THEIR SUCCESSOR (resolveMcpTaskId). A task id an MCP
+// client holds can stop naming anything while the task lives on: the Obsidian
+// placement pass re-keys a project task to obsidian-dg-<blockId> seconds after
+// create_task returned its UUID. The commit that renames records the move in
+// retiredTaskIds (utils/retiredTaskIds.js), so every id a write takes is
+// resolved through that record before dispatch. A response for a resolved id
+// carries `resolved_from` alongside the entity, whose id is the current one.
 
 import {
   applyCreateTask,
@@ -23,14 +31,28 @@ import {
   applyResizeBlock,
   applySetCompletion,
   applyUpdateTask,
+  applyUpdateRecurringTask,
+  applyAddSubtask,
+  applyUpdateSubtask,
   applyUndoOps,
   parseRecurringInstanceId,
 } from './taskMutations.js';
-import { toBlock } from './mcpReadModel.js';
+import {
+  applyCreateGoal, applyUpdateGoal, applyCreateProject, applyUpdateProject,
+  applyGoalProjectUndoOps, GOAL_PROJECT_UNDO_KINDS,
+} from './goalProjectMutations.js';
+import { toBlock, inboxItem, goalItem, projectItem } from './mcpReadModel.js';
+import { resolveRetirement } from './retiredTaskIds.js';
+import { recurringTaskInstance } from './expandRecurringTasks.js';
+import { getOccurrencesInRange } from './recurrenceEngine.js';
+import { recurrenceToWire } from './mcpRepeat.js';
+import { recordDeletedTaskTombstone } from './deletedTaskTombstones.js';
 
 const WRITE_METHODS = new Set([
   'create_task', 'schedule_task', 'move_block', 'resize_block', 'set_completion',
-  'update_task', 'undo_mcp_writes',
+  'update_task', 'update_recurring_task', 'add_subtask', 'update_subtask',
+  'create_goal', 'update_goal', 'create_project', 'update_project',
+  'undo_mcp_writes',
 ]);
 
 export function isWriteMethod(method) {
@@ -41,21 +63,86 @@ const q = (title) => `“${title ?? ''}”`;
 const at = (date, startTime) => (startTime ? `${date} ${startTime}` : `${date}`);
 
 /**
- * @param state   live slices: { tasks, unscheduledTasks, recurringTasks }
- * @param setters { setTasks, setUnscheduledTasks, setRecurringTasks }
+ * @param state   live slices: { tasks, unscheduledTasks, recurringTasks, goals, projects, areas, users }
+ * @param setters { setTasks, setUnscheduledTasks, setRecurringTasks, setRecycleBin,
+ *                  setGoals, setProjects, deleteGoal, deleteProject }
  * @param request { method, params }
  * Returns { ok:true, data, undo? } | { ok:false, error:{ code, message } } —
  * same envelope as handleMcpRequest plus the §4.3 undo descriptor, which the
  * main process journals and strips before anything reaches the MCP client.
  */
 export function handleMcpWrite(state, setters, request) {
-  const params = request?.params ?? {};
+  const { params, resolvedFrom } = resolveRequestIds(state, request?.method, request?.params ?? {});
+  const response = dispatchWrite(state, setters, request?.method, params);
+  if (!resolvedFrom || !response.ok || !response.data) return response;
+  return { ...response, data: { ...response.data, resolved_from: resolvedFrom } };
+}
+
+/**
+ * The id a write should act on. An id that is live as given is used as given,
+ * so a task the rename has not reached yet is never redirected. A retired id
+ * resolves to its successor only when that successor is live: a device that
+ * has the record but not yet the successor row keeps the original id, and the
+ * caller gets an honest not_found rather than an edit landing elsewhere.
+ * `retiredTaskIds` is the record as useMcpBridge read it for this request.
+ */
+export function resolveMcpTaskId(state, id) {
+  if (typeof id !== 'string' || !id) return id;
+  const isLive = (x) => (state.unscheduledTasks ?? []).some((t) => t.id === x)
+    || (state.tasks ?? []).some((t) => t.id === x);
+  if (isLive(id)) return id;
+  const successor = resolveRetirement(state.retiredTaskIds, id);
+  return successor && isLive(successor) ? successor : id;
+}
+
+const ID_PARAM = {
+  create_task: 'taskId', update_task: 'taskId', schedule_task: 'taskId',
+  set_completion: 'taskId', move_block: 'blockId', resize_block: 'blockId',
+  add_subtask: 'taskId', update_subtask: 'taskId',
+};
+
+/**
+ * Resolve the one id a write takes, plus the ids inside undo ops: the journal
+ * recorded them at write time, and a create the vault has since claimed must
+ * still undo. create_task resolves too, for its replay check: a deterministic
+ * id the vault already re-keyed means the create happened, so the replay
+ * returns that task instead of creating a second one.
+ */
+function resolveRequestIds(state, method, params) {
+  if (method === 'undo_mcp_writes') {
+    const ops = (params.ops ?? []).map((op) => {
+      if (!op || typeof op !== 'object') return op;
+      const next = { ...op };
+      if (typeof op.taskId === 'string') next.taskId = resolveMcpTaskId(state, op.taskId);
+      if (typeof op.blockId === 'string') next.blockId = resolveMcpTaskId(state, op.blockId);
+      return next;
+    });
+    return { params: { ...params, ops }, resolvedFrom: null };
+  }
+  const key = ID_PARAM[method];
+  if (!key) return { params, resolvedFrom: null };
+  const resolved = resolveMcpTaskId(state, params[key]);
+  if (resolved === params[key]) return { params, resolvedFrom: null };
+  return { params: { ...params, [key]: resolved }, resolvedFrom: params[key] };
+}
+
+function dispatchWrite(state, setters, method, params) {
   const nowIso = new Date().toISOString();
 
-  switch (request?.method) {
+  switch (method) {
     case 'create_task': {
       const r = applyCreateTask(state, { ...params, nowIso });
       if (!r.ok) return r;
+      if (r.series) {
+        // A repeating task (#2066) is one template in recurringTasks; its
+        // undo removes the series the way the app's own series delete does.
+        if (!r.replayed) setters.setRecurringTasks(r.recurringTasks);
+        const undo = r.replayed ? undefined : {
+          summary: `Created repeating ${q(r.template.title)} from ${r.template.recurrence.startDate}`,
+          op: { kind: 'remove_created_series', templateId: r.template.id },
+        };
+        return { ok: true, data: { ...seriesEntity(r.template), replayed: r.replayed }, ...(undo ? { undo } : {}) };
+      }
       // One slice changed per shape (the other comes back by reference);
       // scheduled creates land directly in tasks — §5.2 atomicity is one
       // transition, not two batched ones.
@@ -110,7 +197,7 @@ export function handleMcpWrite(state, setters, request) {
     }
     case 'move_block': {
       const before = (state.tasks ?? []).find((t) => t.id === params.blockId);
-      const r = applyMoveBlock(state, params);
+      const r = applyMoveBlock(state, { ...params, nowIso });
       if (!r.ok) return r;
       if (!r.replayed) setters.setTasks(r.tasks);
       const undo = r.replayed || !before ? undefined : {
@@ -125,7 +212,7 @@ export function handleMcpWrite(state, setters, request) {
     }
     case 'resize_block': {
       const before = (state.tasks ?? []).find((t) => t.id === params.blockId);
-      const r = applyResizeBlock(state, params);
+      const r = applyResizeBlock(state, { ...params, nowIso });
       if (!r.ok) return r;
       if (!r.replayed) setters.setTasks(r.tasks);
       const undo = r.replayed || !before ? undefined : {
@@ -155,7 +242,7 @@ export function handleMcpWrite(state, setters, request) {
       // is gone.
       const beforeTask = (state.unscheduledTasks ?? []).find((t) => t.id === params.taskId)
         ?? (state.tasks ?? []).find((t) => t.id === params.taskId);
-      const r = applyUpdateTask(state, params);
+      const r = applyUpdateTask(state, { ...params, nowIso });
       if (!r.ok) return r;
       if (!r.replayed) {
         if (r.scheduled) setters.setTasks(r.tasks);
@@ -175,6 +262,102 @@ export function handleMcpWrite(state, setters, request) {
       if (r.task.assignedUserSyncIds?.length) entity.assignee_id = r.task.assignedUserSyncIds[0];
       return { ok: true, data: { ...entity, replayed: r.replayed }, ...(undo ? { undo } : {}) };
     }
+    case 'update_recurring_task': {
+      const r = applyUpdateRecurringTask(state, { ...params, nowIso });
+      if (!r.ok) return r;
+      if (!r.unchanged) setters.setRecurringTasks(r.recurringTasks);
+      const undo = r.undoSnapshot ? {
+        // One quoted span (see update_task): the post-edit series title.
+        summary: `Edited repeating ${q(r.template.title)} (${params.scope === 'series' ? 'series' : r.dateStr}: ${recurringFieldNames(params).join(', ')})`,
+        op: { kind: 'restore_series_fields', ...r.undoSnapshot },
+      } : undefined;
+      const occurs = getOccurrencesInRange(r.template, r.dateStr, r.dateStr, 1).includes(r.dateStr);
+      return {
+        ok: true,
+        data: {
+          ...seriesEntity(r.template, { from: r.dateStr }),
+          // The edited occurrence as it now reads; null when a pattern change
+          // means the series no longer falls on that date.
+          occurrence: occurs ? toBlock(occurrenceTask(r.template, r.dateStr)) : null,
+          scope: params.scope,
+          unchanged: !!r.unchanged,
+        },
+        ...(undo ? { undo } : {}),
+      };
+    }
+    case 'add_subtask': {
+      const r = applyAddSubtask(state, { ...params, nowIso });
+      if (!r.ok) return r;
+      if (!r.replayed) {
+        if (r.scheduled) setters.setTasks(r.tasks);
+        else setters.setUnscheduledTasks(r.unscheduledTasks);
+      }
+      const undo = r.replayed ? undefined : {
+        summary: `Added subtask to ${q(r.task.title)}`,
+        op: { kind: 'remove_created_subtask', taskId: params.taskId, subtaskId: r.subtask.id },
+      };
+      return { ok: true, data: { ...taskEntity(r), subtask: wireSubtask(r.subtask), replayed: r.replayed }, ...(undo ? { undo } : {}) };
+    }
+    case 'update_subtask': {
+      const before = subtaskBefore(state, params.taskId, params.subtaskId);
+      const r = applyUpdateSubtask(state, { ...params, nowIso });
+      if (!r.ok) return r;
+      if (!r.replayed) {
+        if (r.scheduled) setters.setTasks(r.tasks);
+        else setters.setUnscheduledTasks(r.unscheduledTasks);
+      }
+      const undo = r.replayed || !before ? undefined : {
+        summary: `Edited a subtask of ${q(r.task.title)} (${r.touched.join(', ')})`,
+        op: {
+          kind: 'restore_subtask_fields', taskId: params.taskId, subtaskId: params.subtaskId,
+          before: Object.fromEntries(r.touched.map((k) => [k, before[k]])),
+        },
+      };
+      return { ok: true, data: { ...taskEntity(r), subtask: wireSubtask(r.subtask), replayed: r.replayed }, ...(undo ? { undo } : {}) };
+    }
+    case 'create_goal': {
+      const r = applyCreateGoal(state, { ...params, nowIso });
+      if (!r.ok) return r;
+      if (!r.replayed) setters.setGoals((prev) => [...(prev ?? []), r.goal]);
+      const undo = r.replayed ? undefined : {
+        summary: `Created goal ${q(r.goal.title)}`,
+        op: { kind: 'remove_created_goal', goalId: r.goal.id },
+      };
+      return { ok: true, data: { goal: goalItem(r.goal, stateWith(state, { goals: [...(state.goals ?? []), r.goal] })), replayed: r.replayed }, ...(undo ? { undo } : {}) };
+    }
+    case 'update_goal': {
+      const beforeGoal = (state.goals ?? []).find((g) => g && g.id === params.goalId);
+      const r = applyUpdateGoal(state, { ...params, nowIso });
+      if (!r.ok) return r;
+      const nextGoals = (state.goals ?? []).map((g) => (g.id === params.goalId ? r.goal : g));
+      if (!r.replayed) setters.setGoals(() => nextGoals);
+      const undo = r.replayed || !beforeGoal ? undefined : {
+        summary: `Edited goal ${q(r.goal.title)} (${entityFieldNames(r.touched).join(', ')})`,
+        op: { kind: 'restore_goal_fields', goalId: params.goalId, ...beforeFields(beforeGoal, r.touched) },
+      };
+      return { ok: true, data: { goal: goalItem(r.goal, stateWith(state, { goals: nextGoals })), replayed: r.replayed }, ...(undo ? { undo } : {}) };
+    }
+    case 'create_project': {
+      const r = applyCreateProject(state, { ...params, nowIso });
+      if (!r.ok) return r;
+      if (!r.replayed) setters.setProjects((prev) => [...(prev ?? []), r.project]);
+      const undo = r.replayed ? undefined : {
+        summary: `Created project ${q(r.project.title)}`,
+        op: { kind: 'remove_created_project', projectId: r.project.id },
+      };
+      return { ok: true, data: { project: projectItem(r.project, progressTasksOf(state)), replayed: r.replayed }, ...(undo ? { undo } : {}) };
+    }
+    case 'update_project': {
+      const beforeProject = (state.projects ?? []).find((p) => p && p.id === params.projectId);
+      const r = applyUpdateProject(state, { ...params, nowIso });
+      if (!r.ok) return r;
+      if (!r.replayed) setters.setProjects((prev) => (prev ?? []).map((p) => (p.id === params.projectId ? r.project : p)));
+      const undo = r.replayed || !beforeProject ? undefined : {
+        summary: `Edited project ${q(r.project.title)} (${entityFieldNames(r.touched).join(', ')})`,
+        op: { kind: 'restore_project_fields', projectId: params.projectId, ...beforeFields(beforeProject, r.touched) },
+      };
+      return { ok: true, data: { project: projectItem(r.project, progressTasksOf(state)), replayed: r.replayed }, ...(undo ? { undo } : {}) };
+    }
     case 'undo_mcp_writes': {
       // The §4.3 bulk undo. Not itself journaled (the main process clears the
       // journal on success), and applied through the same store layer as every
@@ -182,15 +365,35 @@ export function handleMcpWrite(state, setters, request) {
       // Undone creates land in the recycle bin (cross-list move, the UI's own
       // delete shape) so the vault propagates a legitimate delete instead of
       // healing back a fingerprint-less vanish — see applyUndoOps.
-      const r = applyUndoOps(state, params.ops, { nowIso });
+      const ops = params.ops ?? [];
+      const taskOps = ops.filter((op) => !GOAL_PROJECT_UNDO_KINDS.includes(op?.kind));
+      const entityOps = ops.filter((op) => GOAL_PROJECT_UNDO_KINDS.includes(op?.kind));
+      const r = applyUndoOps(state, taskOps, { nowIso });
       setters.setTasks(r.tasks);
       setters.setUnscheduledTasks(r.unscheduledTasks);
       setters.setRecurringTasks(r.recurringTasks);
       setters.setRecycleBin(r.recycleBin);
-      return { ok: true, data: { undone: r.undone, skipped: r.skipped } };
+      // An undone series create is a delete: tombstoned as the app's own
+      // series delete does, so sync does not bring it back.
+      for (const id of r.tombstones ?? []) recordDeletedTaskTombstone(id, nowIso);
+      let undone = r.undone;
+      let skipped = r.skipped;
+      if (entityOps.length) {
+        // Goal and project reversals (2026-10-04): field restores go through
+        // the list setters; an undone create goes through the hook's own
+        // delete, which writes the sync tombstone the UI's delete writes.
+        const e = applyGoalProjectUndoOps(state, entityOps, { nowIso });
+        if (setters.setGoals) setters.setGoals(() => e.goals);
+        if (setters.setProjects) setters.setProjects(() => e.projects);
+        for (const id of e.removedGoals) setters.deleteGoal?.(id);
+        for (const id of e.removedProjects) setters.deleteProject?.(id);
+        undone += e.undone;
+        skipped += e.skipped;
+      }
+      return { ok: true, data: { undone, skipped } };
     }
     default:
-      return { ok: false, error: { code: 'validation', message: `Unknown write method ${JSON.stringify(request?.method)}` } };
+      return { ok: false, error: { code: 'validation', message: `Unknown write method ${JSON.stringify(method)}` } };
   }
 }
 
@@ -258,17 +461,82 @@ function completionUndo(state, { taskId, completed }) {
   };
 }
 
-/** Inbox-item wire shape, matching buildUnscheduledItems in mcpReadModel.js. */
-function inboxItem(t) {
-  const item = {
-    id: t.id,
-    type: 'task',
-    title: t.title ?? '',
-    priority: typeof t.priority === 'number' ? t.priority : 0,
-    completed: !!t.completed,
+/** How many upcoming dates a series response lists. */
+const NEXT_OCCURRENCES = 5;
+
+/** An occurrence as the read surface builds it, for toBlock. */
+function occurrenceTask(template, dateStr) {
+  return { ...recurringTaskInstance(template, dateStr), recurrence: template.recurrence };
+}
+
+/**
+ * The series part of a create or update_recurring_task response: the series,
+ * its pattern in the wire shape, and its next dates from `from` (the start
+ * for a create) so the caller can confirm the pattern is the one it meant.
+ */
+function seriesEntity(template, { from } = {}) {
+  const start = template.recurrence?.startDate;
+  const dates = getOccurrencesInRange(template, from && from > start ? from : start, '9999-12-31', NEXT_OCCURRENCES);
+  const data = {
+    series: {
+      id: String(template.id),
+      title: template.title ?? '',
+      repeat: recurrenceToWire(template.recurrence),
+      start_date: start ?? null,
+      ...(template.projectId ? { project_id: template.projectId } : {}),
+      ...(template.notes ? { notes: template.notes } : {}),
+    },
+    next_occurrences: dates,
   };
-  if (t.deadline) item.deadline = t.deadline;
-  if (t.projectId) item.project_id = t.projectId;
-  if (t.notes) item.notes = t.notes;
-  return item;
+  if (!from) data.first_occurrence = dates.length ? toBlock(occurrenceTask(template, dates[0])) : null;
+  if (template.assignedUserSyncIds?.length) data.assignee_id = template.assignedUserSyncIds[0];
+  return data;
+}
+
+/** The wire names of what an update_recurring_task call changed, for its summary. */
+export function recurringFieldNames(params) {
+  const names = { startTime: 'start_time', durationMinutes: 'duration', allDay: 'all_day', recurrence: 'repeat', projectId: 'project', assigneeSyncId: 'assignee' };
+  const set = Object.keys(params.set ?? {}).map((k) => names[k] ?? k);
+  const cleared = (params.clear ?? []).filter((k) => !set.includes(k));
+  return [...set, ...cleared];
+}
+
+/** The task entity of a subtask write's response: block or inbox item, as update_task shapes it. */
+function taskEntity(r) {
+  return r.scheduled ? { block: toBlock(r.task) } : { task: inboxItem(r.task) };
+}
+
+function wireSubtask(st) {
+  return { id: String(st.id), title: st.title ?? '', completed: !!st.completed };
+}
+
+function subtaskBefore(state, taskId, subtaskId) {
+  const task = (state.unscheduledTasks ?? []).find((t) => t.id === taskId) ?? (state.tasks ?? []).find((t) => t.id === taskId);
+  const st = (task?.subtasks || []).find((s) => s.id === subtaskId);
+  return st ? { title: st.title ?? '', completed: !!st.completed } : null;
+}
+
+/** before / absentBefore for a goal or project edit, the updateUndoOp split. */
+function beforeFields(entity, touched) {
+  const before = {};
+  const absentBefore = [];
+  for (const key of touched ?? []) {
+    if (Object.prototype.hasOwnProperty.call(entity, key)) before[key] = entity[key];
+    else absentBefore.push(key);
+  }
+  return { before, ...(absentBefore.length ? { absentBefore } : {}) };
+}
+
+/** Storage keys → wire names for goal and project summaries. */
+export function entityFieldNames(touched) {
+  const names = { assignedUserSyncIds: 'assignees', areaId: 'area', goalId: 'goal', startDate: 'start_date', targetDate: 'target_date' };
+  return (touched ?? []).map((key) => names[key] ?? key);
+}
+
+const stateWith = (state, patch) => ({ ...state, ...patch });
+
+/** The denominator the read surface uses: every visible task that is not a device event. */
+export function progressTasksOf(state) {
+  const visible = typeof state.isVisibleForUser === 'function' ? state.isVisibleForUser : () => true;
+  return [...(state.tasks ?? []), ...(state.unscheduledTasks ?? [])].filter(visible).filter((t) => !t._native);
 }

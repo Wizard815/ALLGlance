@@ -126,13 +126,20 @@ export const getOccurrencesInRange = (template, rangeStartStr, rangeEndStr, maxR
       cursor.setMonth(cursor.getMonth() + 1, 1);
     }
   } else if (rec.type === 'yearly') {
-    const cursor = new Date(startDate);
-    while (cursor <= rangeEnd && count < maxOcc) {
-      if (cursor >= startDate) {
-        if (endDate && cursor > endDate) break;
-        if (!addIfInRange(cursor)) break;
-      }
-      cursor.setFullYear(cursor.getFullYear() + 1);
+    // Each year's date comes from the START's month and day, not from the
+    // previous occurrence. Stepping a running cursor (setFullYear + 1) carried
+    // 29 February's overflow forward: 2024-02-29 became 2025-03-01 and then
+    // stayed on 1 March, leap years included. A 29 February series still
+    // shows on 1 March in years without one (Date's own overflow), as it
+    // always has, so occurrences already saved against those dates keep
+    // matching; only leap years return to the 29th.
+    const month = startDate.getMonth();
+    const day = startDate.getDate();
+    for (let year = startDate.getFullYear(); count < maxOcc; year++) {
+      const cursor = new Date(year, month, day, 12);
+      if (cursor > rangeEnd) break;
+      if (endDate && cursor > endDate) break;
+      if (!addIfInRange(cursor)) break;
     }
   }
   return results;
@@ -199,6 +206,78 @@ export const getRecurrencePresets = (dateStr, t, language = 'en') => {
     { label: translate('recurrence.monthlyOnOrdinalWeekday', { ordinal: localizedOrdinal, day: localizedDay }, `Monthly on the ${ordinals[weekOfMonth]} ${dayName}`), value: { type: 'monthly', monthDay: null, monthWeekday: { week: weekOfMonth, day: taskDate.getDay() } } },
     { label: translate('recurrence.yearlyOn', { date: localizedDate }, `Yearly on ${monthName} ${monthDay}`), value: { type: 'yearly' } },
   ];
+};
+
+const noon = (dateStr) => new Date(dateStr + 'T12:00:00');
+const sundayOf = (dateStr) => {
+  const d = noon(dateStr);
+  d.setDate(d.getDate() - d.getDay());
+  return d;
+};
+
+/**
+ * The startDate a series should store after its pattern is changed to
+ * `recurrence` from the occurrence on `dateStr`.
+ *
+ * The series never starts earlier than `origStart`: the engine expands from
+ * startDate, so an earlier start invents occurrences from before the series
+ * existed. Most patterns carry everything they need (daysOfWeek, monthDay,
+ * monthWeekday) and keep `origStart` as it is. Two take part of their pattern
+ * from startDate itself:
+ *
+ * - yearly recurs on startDate's month and day, and
+ * - biweekly takes its alternate-week phase from startDate's week.
+ *
+ * Keeping `origStart` for those recurs on the wrong day, or skips the
+ * occurrence the edit was made from. So the start moves FORWARD to the
+ * first date the new pattern, anchored on `dateStr`, produces on or after
+ * `origStart`. Nothing between `origStart` and that date belonged to the new
+ * pattern, so the series yields exactly the same occurrences, maxOccurrences
+ * counts the same, and nothing is invented.
+ *
+ * An edit made from a date before `origStart` (or a series without one)
+ * starts at `dateStr`, never on an invented earlier date.
+ *
+ * When the pattern, with `origStart`, already produces `dateStr`, nothing
+ * needs to move and the start is kept. That is every ordinary save of an
+ * occurrence (the mobile editor passes the unchanged pattern on each save),
+ * and it matters where the engine shows an occurrence off the start's own
+ * month/day: a yearly series started on 29 February shows on 1 March in other
+ * years, and anchoring on that 1 March would move the series off its leap day.
+ */
+export const editedSeriesStart = (recurrence, origStart, dateStr) => {
+  if (!origStart || dateStr < origStart) return dateStr;
+
+  if ((recurrence?.type === 'yearly' || recurrence?.type === 'biweekly')
+      && getOccurrencesInRange({ recurrence: { ...recurrence, startDate: origStart } }, dateStr, dateStr, 1).includes(dateStr)) {
+    return origStart;
+  }
+
+  if (recurrence?.type === 'yearly') {
+    // dateStr's month and day, in the first year it falls on or after
+    // origStart. The search ends at dateStr's own year at the latest; a 29
+    // February is skipped in years that have none.
+    const monthDay = dateStr.slice(4);
+    for (let year = Number(origStart.slice(0, 4)); ; year++) {
+      const candidate = String(year).padStart(4, '0') + monthDay;
+      if (candidate >= origStart && dateToString(noon(candidate)) === candidate) return candidate;
+    }
+  }
+
+  if (recurrence?.type === 'biweekly') {
+    // Noon-anchored Sundays, so rounding absorbs DST.
+    const weeks = Math.round((sundayOf(dateStr) - sundayOf(origStart)) / (7 * 86400000));
+    if (weeks % 2 === 0) return origStart;
+    // origStart's week is off phase, so nothing in it recurs: start on the
+    // first selected day of the week after. With no daysOfWeek the engine
+    // falls back to startDate's weekday, so that is dateStr's.
+    const days = recurrence.daysOfWeek?.length ? recurrence.daysOfWeek : [noon(dateStr).getDay()];
+    const start = sundayOf(origStart);
+    start.setDate(start.getDate() + 7 + Math.min(...days));
+    return dateToString(start);
+  }
+
+  return origStart;
 };
 
 const WEEKLY_TYPES = new Set(['weekly', 'biweekly']);
