@@ -6,7 +6,6 @@
 
 import { BaseAdapter } from './BaseAdapter.js';
 import LocalStorageReader from '../transport/LocalStorageReader.js';
-import config from '../config.js';
 
 export class LifeglanceAdapter extends BaseAdapter {
   source = 'lifeglance';
@@ -24,7 +23,7 @@ export class LifeglanceAdapter extends BaseAdapter {
     });
   }
 
-  async readMilestones(owner = null) {
+  async readMilestones(_owner = null) {  // lifeGLANCE has no ownership model
     const store = await this.#reader.read({ webUrl: this.config.lifeglance.webUrl });
     const raw = store['lifeglance-pins'] ?? store['milestones'] ?? {};
     const list = typeof raw === 'string' ? JSON.parse(raw) : raw;

@@ -27,9 +27,7 @@
 
 import { BaseAdapter } from './BaseAdapter.js';
 import { taskOf } from '../model.js';
-import { Roster } from '../identity/roster.js';
 import LocalStorageReader from '../transport/LocalStorageReader.js';
-import config from '../config.js';
 
 export class DayglanceAdapter extends BaseAdapter {
   source = 'dayglance';
