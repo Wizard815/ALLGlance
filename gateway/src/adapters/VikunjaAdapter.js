@@ -107,8 +107,7 @@ export class VikunjaAdapter extends BaseAdapter {
     if (due_date) payload.due = due_date;
     if (owner_id) {
       // Find a vikunja user id matching our normalized owner, else store owner_id in extra.
-      const person = this.roster.get(owner_id);
-      const uid = this.#vikunjaUserId(owner_id);
+      const uid = this.#vikunjaUserId.get(String(owner_id));
       if (uid) payload.assigned_user_ids = [uid];
     }
     const res = await fetchJson(`${this.#baseUrl}/api/v2/tasks`, {
@@ -122,10 +121,8 @@ export class VikunjaAdapter extends BaseAdapter {
     return taskOf('vikunja', { ...data, due_date: data.due, project_id: project }, null, data.title);
   }
 
-  /** Track vikunja user ids as we build tasks, for owner mapping. */
+  /** Vikunja user id per owner id, for assignment. Nothing fills it yet, so tasks stay unassigned. */
   #vikunjaUserId = new Map();
-
-  #registerVikunjaUser = (id, name) => this.#vikunjaUserId.set(String(id), String(id));
 
   /**
    * Register vikunja MCP tools. Each tool is namespaced `vikunja_*` and takes

@@ -7,9 +7,7 @@
 // assigned_user_sync_ids -> owner_id.
 
 import { BaseAdapter } from './BaseAdapter.js';
-import { Roster } from '../identity/roster.js';
 import LocalStorageReader from '../transport/LocalStorageReader.js';
-import config from '../config.js';
 
 export class LastglanceAdapter extends BaseAdapter {
   source = 'lastglance';

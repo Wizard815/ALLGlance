@@ -62,7 +62,7 @@ export function toClock(time) {
 export function taskOf(source, raw, owner, fallbackTitle) {
   const due = toDate(raw.due_date ?? raw.due ?? raw.dueDate ?? raw.completedAt ?? raw.startedAt);
   const title = String(raw.title ?? raw.name ?? raw.summary ?? fallbackTitle ?? '(untitled)').trim();
-  const completed = Boolean(raw.completed ?? raw.done ?? raw.status === 'closed' ?? raw.finished ?? false);
+  const completed = Boolean(raw.completed ?? raw.done ?? raw.finished ?? raw.status === 'closed');
   return {
     source,
     id: String(raw.id ?? raw.uuid ?? raw.key ?? raw.taskId ?? null),

@@ -1,8 +1,10 @@
 name: CI
 
-# Lint, test, build, and dependency-audit on every PR and on pushes to main.
-# Gates on ESLint errors (not warnings), the Vitest suite, and any untriaged
-# npm advisory (`npm run audit` — see scripts/audit-check.mjs).
+# Lints and tests ALLGlance's own code on every PR and on pushes to main:
+#   - gateway/                (pnpm: ESLint + node --test)
+#   - gateway/container-mcp/  (npm: node --test against the vendored dayGLANCE model)
+# and checks that gateway/container-mcp/model/ matches what vendor-model.mjs
+# produces from the pinned apps/dayglance submodule.
 on:
   pull_request:
   push:
@@ -15,25 +17,40 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Only dayglance is needed (for the vendored-model check); the other
+      # submodules (vikunja is large) are not.
+      - name: Check out the dayglance submodule
+        run: git submodule update --init --depth 1 apps/dayglance
+
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
 
-      - name: Install dependencies
-        run: npm ci
+      - name: Enable pnpm
+        run: corepack enable
 
-      # Fails only on advisories not already triaged in scripts/audit-check.mjs
-      # (deferred or accepted). A genuinely new vulnerability fails the PR.
-      - name: Audit dependencies
-        run: npm run audit
+      - name: Gateway - install
+        working-directory: gateway
+        run: pnpm install --frozen-lockfile
 
-      - name: Lint
-        run: npm run lint
+      - name: Gateway - lint
+        working-directory: gateway
+        run: pnpm lint
 
-      - name: Test
+      - name: Gateway - test
+        working-directory: gateway
+        run: pnpm test
+
+      - name: dayglance MCP - install
+        working-directory: gateway/container-mcp
+        run: npm install --no-audit --no-fund
+
+      - name: dayglance MCP - test
+        working-directory: gateway/container-mcp
         run: npm test
 
-      - name: Build
-        run: npm run build
+      - name: Vendored model is in sync with apps/dayglance
+        run: |
+          node gateway/container-mcp/scripts/vendor-model.mjs
+          git diff --exit-code -- gateway/container-mcp/model
