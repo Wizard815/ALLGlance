@@ -1,0 +1,83 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+dist-electron
+dist-app
+electron/native/calendar-helper/build/
+electron/native/icloud-helper/build/
+electron/native/speech-helper/build/
+electron/*.provisionprofile
+outputs
+dayglance-android/app/src/main/assets/web
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Stream Deck pack output
+*.streamDeckPlugin
+
+# Obsidian bridge plugin release bundles (attached to GitHub releases by hand)
+dayglance-obsidian-plugin/*.zip
+
+# Local release signing secrets — never commit
+.env.release
+*.p12
+
+# Android build outputs
+dayglance-android/app/build/
+dayglance-android/.gradle/
+dayglance-android/build/
+dayglance-android/local.properties
+
+# Stream Deck temp build artifacts
+stream-deck-plugin/rollup.config-*.cjs
+
+# iOS / Xcode
+dayglance-ios/build/
+dayglance-ios/DerivedData/
+dayglance-ios/.build/
+dayglance-ios/*.xcuserstate
+dayglance-ios/**/xcuserdata/
+dayglance-ios/**/*.xcuserdatad/
+
+# macOS
+.DS_Store
+
+# Android build outputs
+dayglance-android/app/build/
+dayglance-android/.gradle/
+dayglance-android/build/
+dayglance-android/local.properties
+
+# Stream Deck temp build artifacts
+stream-deck-plugin/rollup.config-*.cjs
+
+# iOS / Xcode
+dayglance-ios/build/
+dayglance-ios/DerivedData/
+dayglance-ios/.build/
+dayglance-ios/*.xcuserstate
+dayglance-ios/**/xcuserdata/
+dayglance-ios/**/*.xcuserdatad/
+
+# macOS
+.DS_Store
+.claude/worktrees/

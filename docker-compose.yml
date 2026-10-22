@@ -1,0 +1,180 @@
+# AllGLANCE — combined orchestration for the whole family-stack.
+#
+# Brings together all four GLANCE apps plus the AllGLANCE gateway on one
+# internal network so the gateway can reach each service by its compose
+# service name (that is how gateway/src/config.js resolves hostnames).
+#
+# This is the top-level file the user runs from the repo root:
+#   docker compose up --build
+#
+# Per-app compose files live under apps/<app>/docker-compose.yml and
+# services/vikunja; those are the app-specific overrides. This file is the
+# *union* that wires them together and adds the gateway.
+#
+# --- Unraid / appdata layout ---
+# Map each service's persistent data under /share/appdata/allglance/ so it
+# survives container recreation. Adjust the host paths to your NAS share.
+#
+#   vikunja      -> /share/appdata/allglance/vikunja/{config,db,files,logs}
+#   gateway      -> /share/appdata/allglance/gateway (env file + roster cache)
+#   dayglance    -> /share/appdata/allglance/dayglance (persistent webdata if any)
+#   lastglance   -> (localStorage-based; see DESIGN.md §10)
+#   lifeglance   -> (localStorage-based; see DESIGN.md §10)
+#
+# The lastglance and lifeglance apps are browser localStorage SPAs — they have
+# no server-side state to persist here, so no host mounts are strictly required
+# for them. dayglance keeps its roster in localStorage too; its persistent part
+# is only WebDAV/CalDAV sync, which lives wherever those are configured.
+#
+# --- GLANCEvault (the sync backbone) ---
+# GLANCEvault is the optional self-hosted zero-knowledge sync backend the three
+# browser apps push their encrypted rows to. It is NOT an MCP and never sees
+# plaintext — it relays opaque ciphertext between a household's devices. Set
+# GLANCEVAULT_DEVICE_TOKEN in .env.allglance before starting it. Data lives in
+# a host bind mount owned by uid/gid 99:100 (Unraid nobody:users).
+
+services:
+  # --- glance-vault: zero-knowledge sync backend for the browser apps ---
+  glance-vault:
+    image: ghcr.io/glance-apps/glance-vault:latest
+    container_name: allglance-glance-vault
+    restart: unless-stopped
+    user: "99:100"                 # match the owner of the bind-mounted data dir below
+    ports:
+      - "8088:8080"
+    volumes:
+      - /mnt/user/appdata/allglance/glance-vault:/data   # owned by 99:100 on the host
+    environment:
+      - GLANCEVAULT_STORAGE_PATH=/data/glancevault.db
+      - GLANCEVAULT_PORT=8080
+      - GLANCEVAULT_DEVICE_TOKEN=${GLANCEVAULT_DEVICE_TOKEN}
+      - GLANCEVAULT_AUTH_MODE=${GLANCEVAULT_AUTH_MODE:-shared}
+      # List every origin a browser client connects from. The dayglance Electron
+      # desktop app sends Origin: app://dayglance; web builds send their public
+      # origin. Without these, cross-origin fetch/SSE is blocked.
+      - GLANCEVAULT_ALLOWED_ORIGINS=${GLANCEVAULT_ALLOWED_ORIGINS:-}
+      - GLANCEVAULT_TRUST_PROXY=${GLANCEVAULT_TRUST_PROXY:-loopback}
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # --- vikunja: the server-side hub, real DB, real API ---
+  vikunja:
+    image: ghcr.io/go-vikunja/vikunja:latest
+    container_name: allglance-vikunja
+    restart: unless-stopped
+    ports:
+      - "3457:3456"
+    volumes:
+      - ./services/vikunja/config:/app/vikunja/config:ro
+      - /share/appdata/allglance/vikunja/config:/app/vikunja/config
+      - /share/appdata/allglance/vikunja/db:/db
+      - /share/appdata/allglance/vikunja/files:/app/vikunja/files
+      - /share/appdata/allglance/vikunja/logs:/app/vikunja/logs
+    environment:
+      - VIKUNJA_SERVICE__SECRET=change-me-in-production
+      - VIKUNJA_SERVICE__INTERFACE=:3456
+      - VIKUNJA_SERVICE__PUBLICURL=http://localhost:3457
+      - VIKUNJA_SERVICE__ENABLECALDAV=true
+      - VIKUNJA_SERVICE__ENABLEREGISTRATION=true
+      - VIKUNJA_DATABASE__TYPE=sqlite
+      - VIKUNJA_DATABASE__PATH=/db/vikunja.db
+      - VIKUNJA_FILES__TYPE=local
+      - VIKUNJA_FILES__BASEPATH=/app/vikunja/files
+      - VIKUNJA_LOG__STANDARD=stdout
+      - VIKUNJA_LOG__LEVEL=INFO
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3456/api/v2/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # --- dayglance web build ---
+  dayglance:
+    image: ghcr.io/krelltunez/dayglance:latest
+    container_name: allglance-dayglance
+    restart: unless-stopped
+    ports:
+      - "6767:80"
+    # dayglance's roster lives in the browser localStorage (App.jsx users[] +
+    # meUserSyncId). The web build has NO MCP — the gateway reads dayglance via
+    # the dayglance-mcp service below (same data volume).
+    environment:
+      # Optional: preseed CalDAV so dayglance syncs tasks to/from vikunja.
+      - VIKUNJA_CALDAV_URL=http://vikunja:3456/dav/calendars/admin/
+
+  # --- dayglance MCP (container port of the Electron MCP) ---
+  # dayglance's own image ships no MCP (Electron-only in the desktop app), so
+  # this service runs the ported MCP server (gateway/container-mcp) against a
+  # shared state document on the volume. The gateway consumes it at
+  # http://dayglance-mcp:7893/mcp. Set DAYGLANCE_MCP_TOKEN in .env.allglance.
+  dayglance-mcp:
+    build:
+      context: ./gateway/container-mcp
+      dockerfile: Dockerfile
+    image: allglance/dayglance-mcp:latest
+    container_name: allglance-dayglance-mcp
+    restart: unless-stopped
+    expose:
+      - "7893"                     # internal only; the gateway reaches it by name
+    environment:
+      - DAYGLANCE_MCP_PORT=7893
+      - DAYGLANCE_MCP_TOKEN=${DAYGLANCE_MCP_TOKEN:-}
+      - DAYGLANCE_STATE_FILE=/data/dayglance-state.json
+      - TZ=${TZ:-UTC}
+    volumes:
+      # Shared state document; also imported by the gateway so it can seed /
+      # read it. Owned by 99:100 on Unraid.
+      - /mnt/user/appdata/allglance/dayglance-mcp:/data
+
+  # --- lastglance ---
+  lastglance:
+    image: ghcr.io/krelltunez/lastglance:latest
+    container_name: allglance-lastglance
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+
+  # --- lifeGLANCE ---
+  lifeglance:
+    image: ghcr.io/krelltunez/lifeglance:latest
+    container_name: allglance-lifeglance
+    restart: unless-stopped
+    ports:
+      - "6868:80"
+
+  # --- AllGLANCE gateway: the single front door (MCP + REST) ---
+  allglance-gateway:
+    build:
+      context: ./gateway
+      dockerfile: Dockerfile
+    image: allglance/gateway:latest
+    container_name: allglance-gateway
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+    env_file:
+      - ./.env.allglance        # create this; see README.md
+    environment:
+      # Point the gateway at the containerized dayGLANCE MCP (not loopback).
+      - DAYGLANCE_MCP_HOST=dayglance-mcp
+      - DAYGLANCE_MCP_PORT=7893
+    depends_on:
+      vikunja:
+        condition: service_healthy
+      dayglance:
+        condition: service_started
+      dayglance-mcp:
+        condition: service_started
+    volumes:
+      # Persist the roster cache + any MCP config across container recreation.
+      - /share/appdata/allglance/gateway:/data
+    command: ["node", "src/server.js"]
+
+# The gateway talks to every app by these service-name hostnames (matches
+# gateway/src/config.js defaults). Keep them in sync.
+networks:
+  default:
+    name: allglance-net

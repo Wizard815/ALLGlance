@@ -1,0 +1,13 @@
+node_modules
+pnpm-lock.yaml
+.git
+.gitignore
+*.log
+.DS_Store
+.env.local
+coverage
+dist
+src/**/*.test.js
+**/*.md
+!DESIGN.md
+.github

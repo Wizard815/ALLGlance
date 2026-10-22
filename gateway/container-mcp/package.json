@@ -1,0 +1,21 @@
+{
+  "name": "@allglance/dayglance-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Container-native dayGLANCE MCP server: reuses dayGLANCE's pure read/write models (vendored) and serves the real tool surface over Streamable HTTP, with state from a mounted JSON document (and later GLANCEvault).",
+  "engines": {
+    "node": ">=20"
+  },
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node index.mjs",
+    "vendor": "node scripts/vendor-model.mjs",
+    "test": "node --test --test-reporter spec"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "zod": "^3.23.0"
+  },
+  "license": "MIT"
+}

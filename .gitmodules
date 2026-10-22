@@ -1,0 +1,12 @@
+[submodule "apps/lifeglance"]
+	path = apps/lifeglance
+	url = https://github.com/krelltunez/lifeglance
+[submodule "apps/lastglance"]
+	path = apps/lastglance
+	url = https://github.com/krelltunez/lastglance
+[submodule "apps/dayglance"]
+	path = apps/dayglance
+	url = https://github.com/krelltunez/dayglance
+[submodule "services/vikunja"]
+	path = services/vikunja
+	url = https://github.com/go-vikunja/vikunja
