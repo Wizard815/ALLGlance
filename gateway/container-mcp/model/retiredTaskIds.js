@@ -1,0 +1,368 @@
+// The successor-aware ID RETIREMENT record: `retiredTaskIds`, a synced
+// singleton bundle of { oldId → { retiredAt: ISO, successor: newId } }.
+//
+// RETIREMENT ≠ DELETION. A retired id stopped naming anything because the SAME
+// task's identity moved to a successor id (the Phase 2 block-id migration:
+// legacy content-derived id → obsidian-dg-<blockId>; an untagged retitle's
+// intermediate hash → the final id). The content survives under the successor,
+// so "a newer edit on a retired id" must resolve as "an edit belonging to the
+// successor" — never as a resurrection of the old row. Deletion tombstones
+// cannot express that: they are last-writer-wins against the row's
+// lastModified, so a copy re-stamped NEWER than its tombstone (an offline edit
+// crossing a stamp, a peer's normalization re-stamp) revives — which is what
+// fed the scan-evict ↔ guard-heal war (the phase2TransitionSyncLoop repro).
+//
+// THE PROVENANCE RULE — three channels, three different actors, and no write
+// site ever has two valid choices:
+//   • retiredTaskIds      — written ONLY by a writer that KNOWS the successor
+//                           at write time: the commit that renames an id
+//                           (useObsidianSync write-success commit; any future
+//                           id migration), and ghost-row containment, which
+//                           DERIVES the successor from the corruption itself
+//                           (utils/obsidianGhostRows.js — an old client's
+//                           mangled duplicate carries its successor's ^dg- id
+//                           in its own title).
+//   • deletedTaskIds      — written ONLY by user-intent delete paths: the user
+//                           pressed delete, there IS no successor.
+//                           (useTaskActions / useRecycleBin.)
+//   • deletedObsidianKeys — written ONLY by the vault-scan deletion detector:
+//                           it observed a key vanish and knows NEITHER intent
+//                           nor successor (an untagged line retitled in the
+//                           vault is indistinguishable from delete+create by
+//                           construction — the line carries no identity). It
+//                           keeps its conservative, LWW-revivable semantics.
+//
+// MERGE (mergeRetiredTaskIds): per-key last-writer-wins on retiredAt — two
+// devices retiring the same id to DIFFERENT successors (both stamp the same
+// untagged line while one is offline) keep the newer retirement. The record
+// never arbitrates which successor's ROW survives: the vault line is ground
+// truth, carries exactly one block id once Obsidian's own sync settles, and
+// the deletion detector reaps the losing successor's row on its device's next
+// scan. Ties break deterministically on the successor string so every device
+// converges on the same entry.
+//
+// RESOLUTION (resolveRetirement) is transitive with a cycle guard: entries are
+// written pre-collapsed (the commit records every retired id directly against
+// the FINAL id of its rename chain), so chains do not occur today — but a
+// stale L→M entry alongside M→N resolves to N rather than dangling, so a
+// future producer of chains inherits correct behavior.
+//
+// APPLY (applyTaskRetirements): a row whose id resolves to a live successor is
+// SUPERSEDED REGARDLESS OF TIMESTAMPS — the war killer. If the retired copy is
+// NEWER than the successor, its content is redirected onto the successor
+// (whole-row LWW: the retired copy's fields win, the successor keeps its
+// identity fields) so an offline edit made under the retired id is preserved,
+// not dropped. If the successor is NOT live locally, the record does nothing
+// and the row falls back to ordinary deletion-tombstone semantics — a device
+// that has the record but not yet the successor row must not discard content.
+//
+// PRUNE (pruneRetiredTaskIds): the shared fixed 60-day window
+// (sync/tombstoneRetention.js), keyed on retiredAt, applied by BOTH transports
+// — same lockstep rule as every deletion bundle, so the two tiers never
+// disagree on the set (the disagreement heartbeat the retention module
+// documents). An entry with an unparseable retiredAt is pruned: a retirement
+// we cannot date cannot be honored predictably, and losing an entry only
+// degrades to pre-record semantics.
+//
+// ─── LEGACY-FLEET DUAL-WRITE SHIM — grep anchor: RETIRED_ID_DUAL_WRITE ──────
+// The retirement commit ALSO writes plain deletedTaskIds tombstones for the
+// retired ids, because the shipped v4.7.x fleet's file-tier merge consults
+// ONLY deletedTaskIds — dropping the dual-write would let stale legacy rows
+// resurrect on un-upgraded devices (the (b2) resolution would regress).
+// SUNSET CONDITION: delete the dual-write — flip this flag, remove the dead
+// branches in useObsidianSync's recordRetirements and obsidianGhostRows'
+// persistDerivedGhostRetirements — when BOTH hold:
+//   1. at least TOMBSTONE_RETENTION_DAYS (60) have passed since the first
+//      release carrying retiredTaskIds shipped, AND
+//   2. no pre-retiredTaskIds client (v4.7.x or older) still syncs the account.
+// HONESTY ABOUT (2): it is NOT currently checkable from inside the app.
+// GLANCEvault exposes no device-list endpoint — the device-cursor call is
+// write-only ({accountId, deviceId, lastSeenSeq}) and no peer information of
+// any kind reaches a client (verified against @glance-apps/sync vaultClient's
+// full API surface during the staged-rollout review). Until a fleet-visibility
+// mechanism exists (the capability-bundle / devices-endpoint proposal from
+// that review), (2) is an OPERATOR JUDGMENT — "I know every install that
+// syncs this account and none is pre-4.8" — not a queryable fact. Do not
+// remove the shim on (1) alone; if in doubt, the shim's only cost is a few
+// redundant tombstone entries that GC at 60 days.
+export const RETIRED_ID_DUAL_WRITE = true;
+
+export const RETIRED_TASK_IDS_STORAGE_KEY = 'day-planner-retired-task-ids';
+
+const ts = (v) => {
+  if (v == null) return 0;
+  const t = new Date(v).getTime();
+  return Number.isNaN(t) ? 0 : t;
+};
+
+// A well-formed entry: { retiredAt: parseable ISO, successor: non-empty string }.
+const validEntry = (e) =>
+  !!(e && typeof e === 'object' && typeof e.successor === 'string' && e.successor
+     && !Number.isNaN(new Date(e.retiredAt).getTime()));
+
+/** Read the record from localStorage (empty map on absence/corruption). */
+export function readRetiredTaskIds() {
+  try { return JSON.parse(localStorage.getItem(RETIRED_TASK_IDS_STORAGE_KEY) || '{}'); } catch { return {}; }
+}
+
+/**
+ * Pure: return a copy of `record` with `{oldId → {retiredAt, successor}}`
+ * entries added for each retired id. An existing entry is overwritten only by
+ * a newer retirement (same LWW the merge applies).
+ */
+export function recordRetirements(record, retiredIds, successor, retiredAtIso) {
+  const out = { ...(record || {}) };
+  for (const oldId of retiredIds || []) {
+    const key = String(oldId);
+    const prev = out[key];
+    if (validEntry(prev) && ts(prev.retiredAt) > ts(retiredAtIso)) continue;
+    out[key] = { retiredAt: retiredAtIso, successor: String(successor) };
+  }
+  return out;
+}
+
+/**
+ * Union merge, per-key last-writer-wins on retiredAt; ties break on the
+ * successor string (larger wins) so both devices converge on one entry.
+ * Malformed entries never beat well-formed ones.
+ */
+export function mergeRetiredTaskIds(local = {}, remote = {}) {
+  const out = {};
+  const keys = new Set([...Object.keys(local || {}), ...Object.keys(remote || {})]);
+  for (const k of keys) {
+    const l = (local || {})[k];
+    const r = (remote || {})[k];
+    const lv = validEntry(l);
+    const rv = validEntry(r);
+    if (lv && !rv) { out[k] = l; continue; }
+    if (rv && !lv) { out[k] = r; continue; }
+    if (!lv && !rv) continue; // both malformed → drop
+    const lt = ts(l.retiredAt);
+    const rt = ts(r.retiredAt);
+    if (lt !== rt) { out[k] = lt > rt ? l : r; continue; }
+    out[k] = String(l.successor) >= String(r.successor) ? l : r;
+  }
+  return out;
+}
+
+/**
+ * Prune entries whose retiredAt is strictly older than `cutoff` (a Date), or
+ * unparseable. Pure — returns a new map (the same map when nothing changed).
+ * `tombstoneBundles` ({id → deletedAt ISO} maps, post-prune) extend the
+ * window for an entry whose successor they still name — see
+ * successorStillTombstoned below.
+ */
+export function pruneRetiredTaskIds(record, cutoff, tombstoneBundles = []) {
+  if (!record || typeof record !== 'object' || !cutoff) return record || {};
+  const cutoffMs = cutoff.getTime();
+  let changed = false;
+  const out = {};
+  for (const [k, e] of Object.entries(record)) {
+    if (validEntry(e) && (ts(e.retiredAt) >= cutoffMs || successorStillTombstoned(e, tombstoneBundles, cutoffMs))) out[k] = e;
+    else changed = true;
+  }
+  return changed ? out : record;
+}
+
+/**
+ * THE FUSE EXTENSION (audit fix M9). The re-mint refusal (isTombstonedRemint)
+ * needs BOTH legs on the record: the retirement naming the successor, and
+ * the successor's tombstone. Each prunes at the same 60-day window — but
+ * keyed on its own timestamp, and the tombstone is stamped when the
+ * successor was killed, which is after the retirement was recorded. So the
+ * retirement aged out FIRST, the refusal disarmed while the tombstone (and
+ * the untagged vault line) still stood, and the oscillation it refuses could
+ * resume, damped only by session latches. An aged retirement is therefore
+ * KEPT while a tombstone that itself survives the cutoff still names its
+ * direct successor: the two legs now prune together, at the tombstone's
+ * age. Bounded — the tombstone prunes at 60 days from the kill, and with the
+ * refusal armed nothing re-stamps it — after which a re-mint creates a
+ * successor no tombstone kills, which is convergence (the line gets its
+ * identity back), not the war. Both transports call this with the SAME
+ * post-prune bundles, so they stay in lockstep.
+ */
+function successorStillTombstoned(entry, bundles, cutoffMs) {
+  const successor = String(entry.successor);
+  for (const bundle of bundles || []) {
+    if (!bundle || typeof bundle !== 'object') continue;
+    const at = bundle[successor];
+    if (typeof at === 'string' && ts(at) >= cutoffMs) return true;
+  }
+  return false;
+}
+
+/**
+ * Resolve `id` through the record transitively (L→M plus M→N yields N), with
+ * a cycle guard and hop cap. Returns the FINAL successor id, or null when the
+ * id is not retired.
+ */
+export function resolveRetirement(record, id, maxHops = 10) {
+  const rec = record && typeof record === 'object' ? record : {};
+  let cur = String(id);
+  const seen = new Set([cur]);
+  let resolved = null;
+  for (let hop = 0; hop < maxHops; hop++) {
+    const entry = rec[cur];
+    if (!validEntry(entry)) break;
+    const next = String(entry.successor);
+    if (seen.has(next)) break; // cycle — stop at the last sound step
+    resolved = next;
+    seen.add(next);
+    cur = next;
+  }
+  return resolved;
+}
+
+/**
+ * THE LIVE-COLLISION REFUSAL (2026-09-13 incident, buildout spec 2.8, the
+ * app half). deriveBlockId is deterministic on (note key, title), so a
+ * SECOND line carrying the same title in the same note derives the id of
+ * the task that already owns the first line. Minting it is not assigning
+ * identity to a new task: it records a retirement onto a LIVE successor,
+ * and the retirement apply then redirects this row's content over that
+ * task (whole-row LWW, the fresh import being newer) — notes emptied, color
+ * reset, order dropped, which is what the incident's duplicate lines did.
+ * A live successor was deliberately exempt from isTombstonedRemint because
+ * the lagging-device bridge (a copy still holding the pre-stamp id) relies
+ * on the retirement to converge; that bridge runs through the SCAN (the
+ * legacy hint matches the tokenized line), never through a mint, so the
+ * mint site can refuse a live collision without touching it.
+ *
+ * Refused: the derived id is live as a DIFFERENT task. The row keeps its
+ * legacy id and the line stays untagged; a duplicate line is a human's to
+ * remove, and a copy still syncing from another device resolves on its own
+ * once the tokenized line arrives.
+ *
+ * @param {string} taskId       the untagged task about to be stamped
+ * @param {string} successorId  the app id the derived token would mint
+ * @param {Set<string>} liveIds ids currently live across the task lists
+ * @returns {boolean}
+ */
+export function isLiveCollisionMint(taskId, successorId, liveIds) {
+  if (!(liveIds instanceof Set)) return false;
+  const successor = String(successorId);
+  return successor !== String(taskId) && liveIds.has(successor);
+}
+
+/**
+ * THE RE-MINT REFUSAL (2026-08-31 db-tier retire/tombstone war — the fix at
+ * the MINTING site). True when assigning `successorId` to `taskId` would
+ * re-create an identity this record shows was ALREADY minted for this exact
+ * task and then killed: the record resolves taskId to exactly successorId,
+ * the successor is NOT live anywhere, and a deletion tombstone names it.
+ *
+ * The war this refuses: an engine-side resurrection kept re-supplying a
+ * legacy row each cycle; stamp-on-sight re-derived the SAME dg successor
+ * (deriveBlockId is deterministic on (date, title) — that determinism is the
+ * unanimity feature everywhere else), re-recorded the same retirement, and
+ * re-created the successor row; the tombstone then killed it at the next
+ * apply boundary, ~2s around, indefinitely. Minting here is not assigning a
+ * NEW identity — it is re-running a completed identity move whose outcome
+ * (successor tombstoned) is already on the record. The line is a human's or
+ * the tombstone's; either way, minting again cannot converge.
+ *
+ * NOT refused (deliberately narrow — every leg read from the record, no
+ * proxies): a successor merely absent without a tombstone (a normal first
+ * stamp whose commit hasn't landed, or a device that hasn't pulled the row
+ * yet), a LIVE successor (the retirement apply path supersedes the old row —
+ * refusing would fight it), or a retirement resolving to a DIFFERENT
+ * successor (a retitle changed the derivation — a genuinely new identity).
+ *
+ * @param {Record<string,{retiredAt:string,successor:string}>} record  retiredTaskIds
+ * @param {string} taskId       the untagged task about to be stamped
+ * @param {string} successorId  the app id the derived token would mint (appIdForBlockId)
+ * @param {Array<Record<string,string>>} tombstoneBundles  deletion bundles
+ *   ({ id → deletedAt ISO }) — pass every bundle that can kill the successor
+ *   (deletedTaskIds, deletedObsidianKeys)
+ * @param {Set<string>} liveIds  ids currently live across the task lists
+ * @returns {boolean}
+ */
+export function isTombstonedRemint(record, taskId, successorId, tombstoneBundles, liveIds) {
+  const successor = resolveRetirement(record, taskId);
+  if (!successor || successor !== String(successorId)) return false;
+  if (liveIds instanceof Set && liveIds.has(String(successorId))) return false;
+  for (const bundle of tombstoneBundles || []) {
+    if (bundle && typeof bundle === 'object'
+        && Object.prototype.hasOwnProperty.call(bundle, String(successorId))) return true;
+  }
+  return false;
+}
+
+// Fields that belong to the successor's IDENTITY and must survive a content
+// redirect: everything else on the retired copy is user content and moves.
+const IDENTITY_FIELDS = ['id', 'importSource', 'obsidianBlockId', 'obsidianLegacyId', 'obsidianRawTitle', 'obsidianFileDate'];
+
+/**
+ * Apply the retirement record to one task list.
+ *
+ * For each row whose id resolves to a successor:
+ *   • successor live (per `liveIds`, which should span ALL task lists) →
+ *     the retired row is SUPERSEDED regardless of timestamps: dropped — and,
+ *     when the successor sits in THIS list and the retired copy's lastModified
+ *     is strictly newer, the retired copy's content is first redirected onto
+ *     the successor (whole-row LWW; the successor keeps IDENTITY_FIELDS).
+ *   • successor NOT live anywhere → the row is KEPT (conservative: the record
+ *     must never discard content it cannot redirect; ordinary deletion
+ *     tombstones still apply to such a row).
+ *
+ * @param {object[]} list      one task list (tasks or unscheduledTasks)
+ * @param {Record<string,{retiredAt:string,successor:string}>} record
+ * @param {Set<string>} liveIds  ids currently live across BOTH task lists
+ * @returns {object[]} the filtered/redirected list (same array when unchanged)
+ */
+export function applyTaskRetirements(list, record, liveIds) {
+  if (!Array.isArray(list) || !record || Object.keys(record).length === 0) return list || [];
+  let changed = false;
+  const byId = new Map();
+  for (const t of list) { if (t) byId.set(String(t.id), t); }
+  const dropped = new Set();
+  for (const t of list) {
+    if (!t) continue;
+    const successor = resolveRetirement(record, t.id);
+    if (!successor || successor === String(t.id)) continue;
+    if (!liveIds.has(successor)) continue; // no live successor → keep (conservative)
+    dropped.add(String(t.id));
+    changed = true;
+    const succRow = byId.get(successor);
+    if (succRow && ts(t.lastModified) > ts(succRow.lastModified)) {
+      // Redirect: the retired copy is the newer edit — its content belongs to
+      // the successor. Whole-row LWW with the successor's identity preserved.
+      const merged = { ...t };
+      for (const f of IDENTITY_FIELDS) {
+        if (succRow[f] !== undefined) merged[f] = succRow[f];
+        else delete merged[f];
+      }
+      byId.set(successor, merged);
+    }
+  }
+  if (!changed) return list;
+  const out = [];
+  for (const t of list) {
+    if (!t) continue;
+    const id = String(t.id);
+    if (dropped.has(id)) continue;
+    out.push(byId.get(id) || t);
+  }
+  return out;
+}
+
+/**
+ * Convenience wrapper for a { tasks, unscheduledTasks } pair: builds the
+ * cross-list live-id set and applies the record to both lists. `recycleBin`
+ * (and any other task-shaped list passed) contributes to the LIVE set only:
+ * a successor sitting in the bin is still the identity the content moved to,
+ * so the retired copy is superseded rather than kept (audit M8 — the same
+ * every-kind rule the snapshot-delete partition applies). The bin itself is
+ * returned untouched.
+ */
+export function applyRetirementsToTaskLists({ tasks, unscheduledTasks, recycleBin }, record) {
+  const t = Array.isArray(tasks) ? tasks : [];
+  const u = Array.isArray(unscheduledTasks) ? unscheduledTasks : [];
+  const b = Array.isArray(recycleBin) ? recycleBin : [];
+  if (!record || Object.keys(record).length === 0) return { tasks: t, unscheduledTasks: u };
+  const liveIds = new Set([...t, ...u, ...b].filter(Boolean).map((x) => String(x.id)));
+  return {
+    tasks: applyTaskRetirements(t, record, liveIds),
+    unscheduledTasks: applyTaskRetirements(u, record, liveIds),
+  };
+}

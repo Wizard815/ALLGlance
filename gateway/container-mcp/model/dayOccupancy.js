@@ -229,6 +229,24 @@ export function adjustPastConflicts(state, date, { startTime, duration, tasks = 
 }
 
 /**
+ * The name of the obstacle a placement hit, or null when it has none.
+ *
+ * Obstacles name themselves with `label` (taskInterval, routineIntervals), not
+ * `title`. Messages that read `.title` printed "undefined" after every slide
+ * and never named the event Postpone refused for.
+ */
+export function obstacleName(obstacle) {
+  const name = obstacle?.label;
+  return typeof name === 'string' && name.trim() ? name : null;
+}
+
+/** The obstacle as an English message phrase: its name in quotes, or "a calendar event". */
+export function describeObstacle(obstacle) {
+  const name = obstacleName(obstacle);
+  return name ? `"${name}"` : 'a calendar event';
+}
+
+/**
  * The routine a placement would land on, or null when the time is clear.
  *
  * ROUTINES ONLY, deliberately. Task-on-task overlap stays legal: the timeline
