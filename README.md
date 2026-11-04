@@ -138,8 +138,12 @@ cp gateway/.env.example .env.allglance
 #    (The gateway and the dayglance-mcp service must share the same
 #     DAYGLANCE_MCP_TOKEN.)
 
-# 2. Build + run the stack on one internal network.
-docker compose up --build
+#    Also set VIKUNJA_SERVICE_SECRET and GLANCEVAULT_DEVICE_TOKEN (compose
+#    refuses to start without them). .env.allglance is gitignored.
+
+# 2. Build + run the stack on one internal network. --env-file is required so
+#    compose can substitute the secrets into docker-compose.yml.
+docker compose --env-file .env.allglance up --build
 
 # 3. Check it.
 curl http://localhost:8090/health
@@ -183,9 +187,9 @@ DAYGLANCE_MCP_TOKEN=secret DAYGLANCE_STATE_FILE=/data/dayglance-state.json node 
 ## Unraid / appdata layout
 
 ```
-/mnt/user/appdata/allglance/
-├── vikunja/{config,db,files,logs}
-├── gateway         # .env, roster cache
+/mnt/user/appdata/allglance-data/      # ALLGLANCE_DATA; kept outside the git checkout
+├── vikunja/{db,files,logs}
+├── gateway         # roster cache
 ├── dayglance-mcp   # dayglance-state.json (owned 99:100)
 └── glance-vault    # glancevault.db (owned 99:100)
 ```

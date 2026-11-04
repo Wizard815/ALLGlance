@@ -36,12 +36,15 @@ export class VikunjaAdapter extends BaseAdapter {
 
   async status() {
     try {
-      const res = await fetchJson(`${this.#baseUrl}/api/v2/authors/me`, {
-        headers: this.#auth(),
-        timeoutMs: 5000,
-      });
-      const me = res?.data?.id ?? res?.id ?? null;
-      return { ok: !!me, me, label: this.label };
+      // Reachability, then token validity via a cheap authenticated read.
+      await fetchJson(`${this.#baseUrl}/health`, { timeoutMs: 5000 });
+      if (this.#token) {
+        await fetchJson(`${this.#baseUrl}/api/v2/projects?limit=1`, {
+          headers: this.#auth(),
+          timeoutMs: 5000,
+        });
+      }
+      return { ok: true, authenticated: !!this.#token, label: this.label };
     } catch (err) {
       return { ok: false, error: err.message, label: this.label };
     }
