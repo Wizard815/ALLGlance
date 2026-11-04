@@ -81,3 +81,11 @@ dayglance-ios/**/*.xcuserdatad/
 # macOS
 .DS_Store
 .claude/worktrees/
+
+# AllGLANCE runtime: secrets and data must never be committed
+.env.allglance
+allglance-data/
+/vikunja/
+/vault/
+/glance-vault/
+/dayglance-mcp/

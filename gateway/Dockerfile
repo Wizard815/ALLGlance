@@ -20,6 +20,7 @@ RUN pnpm install --prod --frozen-lockfile
 
 # Install the headless browser + OS deps for the Playwright fallback reader
 # (lastglance/lifeglance localStorage reads in the Docker web deployment).
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 RUN npx playwright install --with-deps chromium
 
 # ---- Runtime ----
@@ -27,10 +28,17 @@ FROM node:22-bookworm
 ENV NODE_ENV=production
 WORKDIR /app
 
+# Chromium for the Playwright reader: browser binaries from the deps stage plus
+# the OS libraries they need (installed here, since --with-deps only touched the
+# deps stage's filesystem).
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+COPY --from=deps /ms-playwright /ms-playwright
+COPY --from=deps /app/node_modules ./node_modules
+RUN npx playwright install-deps chromium && rm -rf /var/lib/apt/lists/*
+
 # Non-root user.
 RUN groupadd -r allglance && useradd -r -g allglance -d /app allglance
 
-COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
 # Config + runtime data (roster cache, MCP session state) lives here.

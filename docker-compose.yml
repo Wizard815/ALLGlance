@@ -12,12 +12,12 @@
 # *union* that wires them together and adds the gateway.
 #
 # --- Unraid / appdata layout ---
-# Map each service's persistent data under /share/appdata/allglance/ so it
+# Map each service's persistent data under ${ALLGLANCE_DATA:-/mnt/user/appdata/allglance-data}/ so it
 # survives container recreation. Adjust the host paths to your NAS share.
 #
-#   vikunja      -> /share/appdata/allglance/vikunja/{config,db,files,logs}
-#   gateway      -> /share/appdata/allglance/gateway (env file + roster cache)
-#   dayglance    -> /share/appdata/allglance/dayglance (persistent webdata if any)
+#   vikunja      -> ${ALLGLANCE_DATA:-/mnt/user/appdata/allglance-data}/vikunja/{config,db,files,logs}
+#   gateway      -> ${ALLGLANCE_DATA:-/mnt/user/appdata/allglance-data}/gateway (env file + roster cache)
+#   dayglance    -> ${ALLGLANCE_DATA:-/mnt/user/appdata/allglance-data}/dayglance (persistent webdata if any)
 #   lastglance   -> (localStorage-based; see DESIGN.md §10)
 #   lifeglance   -> (localStorage-based; see DESIGN.md §10)
 #
@@ -30,7 +30,11 @@
 # GLANCEvault is the optional self-hosted zero-knowledge sync backend the three
 # browser apps push their encrypted rows to. It is NOT an MCP and never sees
 # plaintext — it relays opaque ciphertext between a household's devices. Set
-# GLANCEVAULT_DEVICE_TOKEN in .env.allglance before starting it. Data lives in
+# GLANCEVAULT_DEVICE_TOKEN in .env.allglance before starting it.
+#
+# Run with:  docker compose --env-file .env.allglance up --build
+# (--env-file is what makes ${...} substitution below see your secrets; the
+# gateway's env_file only feeds the container, not compose interpolation.) Data lives in
 # a host bind mount owned by uid/gid 99:100 (Unraid nobody:users).
 
 services:
@@ -43,11 +47,11 @@ services:
     ports:
       - "8088:8080"
     volumes:
-      - /mnt/user/appdata/allglance/glance-vault:/data   # owned by 99:100 on the host
+      - ${ALLGLANCE_DATA:-/mnt/user/appdata/allglance-data}/glance-vault:/data   # owned by 99:100 on the host
     environment:
       - GLANCEVAULT_STORAGE_PATH=/data/glancevault.db
       - GLANCEVAULT_PORT=8080
-      - GLANCEVAULT_DEVICE_TOKEN=${GLANCEVAULT_DEVICE_TOKEN}
+      - GLANCEVAULT_DEVICE_TOKEN=${GLANCEVAULT_DEVICE_TOKEN:?set GLANCEVAULT_DEVICE_TOKEN in .env.allglance}
       - GLANCEVAULT_AUTH_MODE=${GLANCEVAULT_AUTH_MODE:-shared}
       # List every origin a browser client connects from. The dayglance Electron
       # desktop app sends Origin: app://dayglance; web builds send their public
@@ -62,23 +66,23 @@ services:
 
   # --- vikunja: the server-side hub, real DB, real API ---
   vikunja:
-    image: ghcr.io/go-vikunja/vikunja:latest
+    # Pinned: the services/vikunja submodule tracks unreleased main, which has
+    # routes (e.g. /api/v2/mcp) the released image lacks. Bump deliberately.
+    image: ghcr.io/go-vikunja/vikunja:${VIKUNJA_IMAGE_TAG:-2.6.0}
     container_name: allglance-vikunja
     restart: unless-stopped
     ports:
       - "3457:3456"
     volumes:
-      - ./services/vikunja/config:/app/vikunja/config:ro
-      - /share/appdata/allglance/vikunja/config:/app/vikunja/config
-      - /share/appdata/allglance/vikunja/db:/db
-      - /share/appdata/allglance/vikunja/files:/app/vikunja/files
-      - /share/appdata/allglance/vikunja/logs:/app/vikunja/logs
+      - ${ALLGLANCE_DATA:-/mnt/user/appdata/allglance-data}/vikunja/db:/db
+      - ${ALLGLANCE_DATA:-/mnt/user/appdata/allglance-data}/vikunja/files:/app/vikunja/files
+      - ${ALLGLANCE_DATA:-/mnt/user/appdata/allglance-data}/vikunja/logs:/app/vikunja/logs
     environment:
-      - VIKUNJA_SERVICE__SECRET=change-me-in-production
+      - VIKUNJA_SERVICE__SECRET=${VIKUNJA_SERVICE_SECRET:?set VIKUNJA_SERVICE_SECRET in .env.allglance}
       - VIKUNJA_SERVICE__INTERFACE=:3456
       - VIKUNJA_SERVICE__PUBLICURL=http://localhost:3457
       - VIKUNJA_SERVICE__ENABLECALDAV=true
-      - VIKUNJA_SERVICE__ENABLEREGISTRATION=true
+      - VIKUNJA_SERVICE__ENABLEREGISTRATION=${VIKUNJA_ENABLE_REGISTRATION:-false}
       - VIKUNJA_DATABASE__TYPE=sqlite
       - VIKUNJA_DATABASE__PATH=/db/vikunja.db
       - VIKUNJA_FILES__TYPE=local
@@ -86,7 +90,7 @@ services:
       - VIKUNJA_LOG__STANDARD=stdout
       - VIKUNJA_LOG__LEVEL=INFO
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3456/api/v2/healthz"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3456/health"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -117,6 +121,7 @@ services:
     image: allglance/dayglance-mcp:latest
     container_name: allglance-dayglance-mcp
     restart: unless-stopped
+    user: "99:100"                 # non-root; matches the owner of the data dir below
     expose:
       - "7893"                     # internal only; the gateway reaches it by name
     environment:
@@ -127,7 +132,7 @@ services:
     volumes:
       # Shared state document; also imported by the gateway so it can seed /
       # read it. Owned by 99:100 on Unraid.
-      - /mnt/user/appdata/allglance/dayglance-mcp:/data
+      - ${ALLGLANCE_DATA:-/mnt/user/appdata/allglance-data}/dayglance-mcp:/data
 
   # --- lastglance ---
   lastglance:
@@ -170,7 +175,12 @@ services:
         condition: service_started
     volumes:
       # Persist the roster cache + any MCP config across container recreation.
-      - /share/appdata/allglance/gateway:/data
+      - ${ALLGLANCE_DATA:-/mnt/user/appdata/allglance-data}/gateway:/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8090/health').then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
     command: ["node", "src/server.js"]
 
 # The gateway talks to every app by these service-name hostnames (matches
