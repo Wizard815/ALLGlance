@@ -213,8 +213,14 @@ AllGLANCE/
 └── gateway/.env.example  # copy to .env.allglance
 ```
 
-The apps and vikunja are submodules pointing at their own upstreams — keep them
-on `main`. AllGLANCE's own work lives under `gateway/`.
+The apps and vikunja are submodules pointing at their own upstreams (no forks
+needed). They are pinned to release tags and are **reference source only**: the
+stack runs the matching prebuilt ghcr images, pinned in `docker-compose.yml`.
+Clone with `git clone --recurse-submodules` (or `git submodule update --init`)
+if you want the sources, e.g. to re-run the vendoring script. To upgrade: move
+the submodule to the new tag, bump the matching image tag, and (dayglance only)
+re-run `node gateway/container-mcp/scripts/vendor-model.mjs`. AllGLANCE's own
+work lives under `gateway/`.
 
 ## What's deferred (honest)
 

@@ -50,22 +50,23 @@ export class VikunjaAdapter extends BaseAdapter {
     }
   }
 
-  /** Fetch a vikunja page set with cursor pagination (limit 100, offset by keyset). */
+  /**
+   * Fetch every page of a vikunja /api/v2 list. v2 paginates with `page` /
+   * `per_page` and wraps results in { items, total, page, per_page,
+   * total_pages }. per_page is silently capped server-side, so the loop is
+   * driven by total_pages rather than by guessing the page size.
+   */
   async #paginate(endpoint, params = {}, acc = []) {
     const url = new URL(`${this.#baseUrl}${endpoint}`);
-    url.searchParams.set('limit', '100');
     for (const [k, v] of Object.entries(params)) {
       url.searchParams.set(k, String(v));
     }
-    // vikunja uses `limit`/`offset`; keep it simple with a bounded loop.
-    let offset = 0;
-    for (let page = 0; page < 50; page++) {
-      url.searchParams.set('offset', String(offset));
+    let totalPages = 1;
+    for (let page = 1; page <= Math.min(totalPages, 50); page++) {
+      url.searchParams.set('page', String(page));
       const res = await fetchJson(url.toString(), { headers: this.#auth(), timeoutMs: 10000 });
-      const items = res?.data ?? [];
-      acc.push(...items);
-      if (items.length < 100) break;
-      offset += items.length;
+      acc.push(...(res?.items ?? []));
+      totalPages = res?.total_pages ?? 1;
     }
     return acc;
   }
@@ -76,24 +77,25 @@ export class VikunjaAdapter extends BaseAdapter {
     const tasks = [];
     const roster = this.roster;
     for (const project of projects) {
-      if (project.closed) continue;
-      const ptasks = await this.#paginate('/api/v2/tasks', { project_id: project.id });
+      if (project.is_archived) continue;
+      const ptasks = await this.#paginate(`/api/v2/projects/${project.id}/tasks`);
       for (const t of ptasks) {
-        // vikunja assigns a task to zero or more users via assigned_users[].user.id.
+        // vikunja v2 lists a task's assignees as user objects in assignees[].
         let ownerId = null;
-        const assignees = t.assigned_users ?? [];
+        const assignees = t.assignees ?? [];
         if (assignees.length) {
-          const ids = assignees.map((a) => String(a.user?.id ?? a.user));
+          const ids = assignees.map((a) => String(a.id));
           ownerId = owner ? (ids.includes(String(owner)) ? owner : null) : ids[0];
         }
-        roster.addVikunjaUser(t.user || {});
+        if (t.created_by?.id) roster.addVikunjaUser({ ...t.created_by, fullName: t.created_by.name || undefined });
         for (const a of assignees) {
-          if (a.user?.id) roster.addVikunjaUser(a.user);
+          if (a?.id) roster.addVikunjaUser({ ...a, fullName: a.name || undefined });
         }
         tasks.push(
           taskOf('vikunja', {
             ...t,
-            due_date: t.due,
+            // vikunja serializes an unset date as year 0001.
+            due_date: t.due_date && !t.due_date.startsWith('0001') ? t.due_date : null,
             project_id: project.id,
           }, ownerId)
         );
@@ -107,22 +109,28 @@ export class VikunjaAdapter extends BaseAdapter {
     const project = Number(project_id);
     if (!project) return null;
     const payload = { title };
-    if (due_date) payload.due = due_date;
-    if (owner_id) {
-      // Find a vikunja user id matching our normalized owner, else store owner_id in extra.
-      const person = this.roster.get(owner_id);
-      const uid = this.#vikunjaUserId(owner_id);
-      if (uid) payload.assigned_user_ids = [uid];
-    }
-    const res = await fetchJson(`${this.#baseUrl}/api/v2/tasks`, {
+    // Task fields are `due_date` (RFC3339); a bare YYYY-MM-DD is promoted to UTC midnight.
+    if (due_date) payload.due_date = /^\d{4}-\d{2}-\d{2}$/.test(due_date) ? `${due_date}T00:00:00Z` : due_date;
+    const data = await fetchJson(`${this.#baseUrl}/api/v2/projects/${project}/tasks`, {
       method: 'POST',
       headers: { ...this.#auth(), 'Content-Type': 'application/json' },
       body: payload,
       timeoutMs: 10000,
     });
-    const data = res?.data;
-    if (!data) return null;
-    return taskOf('vikunja', { ...data, due_date: data.due, project_id: project }, null, data.title);
+    if (!data?.id) return null;
+    // Assignees are read-only on create in v2; assign via the dedicated endpoint.
+    if (owner_id) {
+      const uid = this.#vikunjaUserId.get(String(owner_id)) ?? (/^\d+$/.test(String(owner_id)) ? Number(owner_id) : null);
+      if (uid) {
+        await fetchJson(`${this.#baseUrl}/api/v2/tasks/${data.id}/assignees`, {
+          method: 'POST',
+          headers: { ...this.#auth(), 'Content-Type': 'application/json' },
+          body: { user_id: Number(uid) },
+          timeoutMs: 10000,
+        }).catch(() => null);
+      }
+    }
+    return taskOf('vikunja', { ...data, project_id: project }, null, data.title);
   }
 
   /** Track vikunja user ids as we build tasks, for owner mapping. */

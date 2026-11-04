@@ -9,7 +9,7 @@
 //
 // Default app path: ../../apps/dayglance relative to this file.
 
-import { cpSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from 'node:fs';
+import { cpSync, mkdirSync, readFileSync, writeFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -20,7 +20,7 @@ const app = process.argv[2] || join(destRoot, '..', '..', 'apps', 'dayglance');
 const UTILS = [
   'bucketList.js', 'colorUtils.js', 'dayOccupancy.js', 'frameInstances.js',
   'goalProgress.js', 'localeFormatting.js', 'mcpFrames.js', 'mcpReadModel.js',
-  'mcpRoutines.js', 'mcpWriteModel.js', 'projectProgress.js', 'recurrenceEngine.js',
+  'mcpRoutines.js', 'mcpWriteModel.js', 'obsidianProjectNotes.js', 'projectProgress.js', 'recurrenceEngine.js',
   'taskMutations.js', 'taskUtils.js',
 ];
 
@@ -32,10 +32,34 @@ for (const f of UTILS) {
   cpSync(join(app, 'src', 'utils', f), join(modelDir, f));
 }
 
-const acSrc = join(app, 'packages', 'agenda-core', 'src');
-for (const f of readdirSync(acSrc)) {
-  if (f.endsWith('.js') && !f.endsWith('.test.js')) {
-    cpSync(join(acSrc, f), join(acDir, f));
+// Pull in transitive sibling imports (./x.js) from src/utils that UTILS misses,
+// so a dayglance update that adds a helper doesn't break the vendored model.
+const copied = new Set(UTILS);
+for (let changed = true; changed; ) {
+  changed = false;
+  for (const f of [...copied]) {
+    const txt = readFileSync(join(modelDir, f), 'utf8');
+    for (const m of txt.matchAll(/from '\.\/([\w.-]+\.js)'/g)) {
+      const dep = m[1];
+      if (copied.has(dep) || !existsSync(join(app, 'src', 'utils', dep))) continue;
+      cpSync(join(app, 'src', 'utils', dep), join(modelDir, dep));
+      copied.add(dep);
+      changed = true;
+    }
+  }
+}
+
+// Vendored workspace packages: [package dir, local dir name, bare specifier].
+const PACKAGES = [
+  ['agenda-core', 'agenda-core', '@glance-apps/agenda-core'],
+  ['obsidian-format', 'obsidian-format', '@glance-apps/obsidian-format'],
+];
+for (const [pkg, local] of PACKAGES) {
+  const src = join(app, 'packages', pkg, 'src');
+  const dest = join(modelDir, local);
+  mkdirSync(dest, { recursive: true });
+  for (const f of readdirSync(src)) {
+    if (f.endsWith('.js') && !f.endsWith('.test.js')) cpSync(join(src, f), join(dest, f));
   }
 }
 
@@ -44,7 +68,10 @@ for (const f of readdirSync(modelDir)) {
   if (!f.endsWith('.js')) continue;
   const p = join(modelDir, f);
   const txt = readFileSync(p, 'utf8');
-  const next = txt.replace(/'@glance-apps\/agenda-core'/g, "'./agenda-core/index.js'");
+  let next = txt;
+  for (const [, local, spec] of PACKAGES) {
+    next = next.split(`'${spec}'`).join(`'./${local}/index.js'`);
+  }
   if (next !== txt) writeFileSync(p, next);
 }
 
