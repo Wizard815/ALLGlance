@@ -123,6 +123,28 @@ export class VikunjaAdapter extends BaseAdapter {
     return acc;
   }
 
+  /**
+   * Fill the roster with everyone who has access to a project (needs the API
+   * token's `projects.users_search` permission). Without it the roster still
+   * learns people as tasks are read (assignees and creators), so this degrades
+   * to "who has appeared on a task" rather than failing.
+   */
+  async refreshRoster() {
+    try {
+      const projects = await this.#paginate('/api/v2/projects');
+      for (const project of projects) {
+        if (project.is_archived) continue;
+        const users = await this.#paginate(`/api/v2/projects/${project.id}/users/search`);
+        for (const u of users) {
+          if (u?.id) this.roster.addVikunjaUser({ ...u, fullName: u.name || undefined });
+        }
+      }
+    } catch {
+      // token lacks projects.users_search (or an older server): keep what tasks taught us
+    }
+    return this.roster.list();
+  }
+
   /** Read tasks, scoped to `owner` when provided. */
   async readTasks(owner = null) {
     const projects = await this.#paginate('/api/v2/projects');
@@ -189,18 +211,20 @@ export class VikunjaAdapter extends BaseAdapter {
     });
     if (!data?.id) return null;
     // Assignees are read-only on create in v2; assign via the dedicated endpoint.
+    let assignedTo = null;
     if (owner_id) {
       const uid = this.#vikunjaUserId.get(String(owner_id)) ?? (/^\d+$/.test(String(owner_id)) ? Number(owner_id) : null);
       if (uid) {
-        await fetchJson(`${this.#baseUrl}/api/v2/tasks/${data.id}/assignees`, {
+        const ok = await fetchJson(`${this.#baseUrl}/api/v2/tasks/${data.id}/assignees`, {
           method: 'POST',
           headers: { ...this.#auth() },
           body: { user_id: Number(uid) },
           timeoutMs: 10000,
-        }).catch(() => null);
+        }).then(() => true, () => false);
+        if (ok) assignedTo = String(uid);
       }
     }
-    return taskOf('vikunja', { ...data, project_id: resolved }, null, data.title);
+    return taskOf('vikunja', { ...data, project_id: resolved }, assignedTo, data.title);
   }
 
   /**

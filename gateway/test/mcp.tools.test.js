@@ -7,6 +7,7 @@ import { Roster } from '../src/identity/roster.js';
 import { DayglanceAdapter } from '../src/adapters/DayglanceAdapter.js';
 import { VikunjaAdapter } from '../src/adapters/VikunjaAdapter.js';
 import { taskOf } from '../src/model.js';
+import { explain } from '../src/mcp/tools.js';
 
 const T = (source, id, title, extra = {}) => taskOf(source, { id, title, ...extra }, extra.owner ?? null);
 
@@ -152,5 +153,54 @@ describe('dates', () => {
   it('Vikunja\'s zero date means "no due date" (and must not sort first)', async () => {
     const t = taskOf('vikunja', { id: 1, title: 'x', due_date: '0001-01-01T00:00:00Z' }, null);
     equal(t.due_date, null);
+  });
+});
+
+describe('vikunja roster', () => {
+  const json = (o) => new Response(JSON.stringify(o), { headers: { 'content-type': 'application/json' } });
+  it('lists project users (so list_users is not empty before any task is read), and survives a 401', async () => {
+    const roster = new Roster();
+    const a = new VikunjaAdapter({ roster, config: { vikunja: { enabled: true, url: 'http://v', token: 't', mcp: { enabled: false } }, playwright: {} } });
+    globalThis.fetch = async (url) => {
+      const u = new URL(url);
+      if (u.pathname === '/api/v2/projects') return json({ items: [{ id: 2 }, { id: 3, is_archived: true }], total_pages: 1 });
+      if (u.pathname === '/api/v2/projects/2/users/search') return json({ items: [{ id: 1, username: 'dad', name: 'Dad' }, { id: 2, username: 'mum', name: '' }], total_pages: 1 });
+      return new Response('{}', { status: 404 });
+    };
+    deepEqual((await a.refreshRoster()).map((p) => p.name).sort(), ['Dad', 'mum']);
+    globalThis.fetch = async () => new Response('{}', { status: 401 });
+    equal((await a.refreshRoster()).length, 2, 'a 401 keeps what we know and does not throw');
+  });
+});
+
+describe('partial answers are labelled', () => {
+  it('list_tasks / get_day say which source was unreachable instead of silently omitting it', async () => {
+    const gw = gatewayWith({ tasks: { vikunja: [T('vikunja', '1', 'V', { due_date: '2026-11-06' })] } });
+    const day = gw.adapters().find((a) => a.source === 'dayglance');
+    day.readTasks = async () => { throw new Error('fetch failed'); };
+    day.readBlocks = async () => { throw new Error('fetch failed'); };
+    const r = await run(gw, 'allglance_list_tasks', {});
+    deepEqual(r.unavailable, ['dayglance']);
+    match(r.note, /leaves them out/);
+    equal(r.total, 1);
+    const d = await run(gw, 'allglance_get_day', { date: '2026-11-06' });
+    deepEqual(d.unavailable, ['dayglance']);
+    equal(d.tasks.length, 1);
+    equal('unavailable' in (await run(gatewayWith({}), 'allglance_list_tasks', {})), false, 'no noise when everything answered');
+  });
+
+  it('a dayGLANCE write that cannot connect says so in plain words', async () => {
+    const a = new DayglanceAdapter({ roster: new Roster(), config: { dayglance: { enabled: true, webUrl: 'x' }, playwright: {} } });
+    a.setTransport({ read: async () => ({}), call: async () => { throw new TypeError('fetch failed'); } }, 'mcp');
+    await rejects(a.writeTask({ title: 'x' }), /temporarily unreachable.*not changed/);
+  });
+});
+
+describe('error wording', () => {
+  it('connection failures and refused credentials become actionable sentences', () => {
+    match(explain(new TypeError('fetch failed'), 'vikunja').message, /Vikunja is temporarily unreachable.*Nothing was changed/);
+    match(explain(new Error('POST http://v/api/v2/tasks -> 401 Unauthorized'), 'vikunja').message, /refused the gateway's credentials \(HTTP 401\).*retrying will not help/);
+    const other = new Error('title must not be empty');
+    equal(explain(other, 'vikunja'), other, 'domain errors pass through untouched');
   });
 });
