@@ -74,6 +74,7 @@ services:
     image: ghcr.io/go-vikunja/vikunja:${VIKUNJA_IMAGE_TAG:-2.8.0}
     container_name: allglance-vikunja
     restart: unless-stopped
+    user: "99:100"                 # same owner as every other data dir here (the image default, uid 1000, cannot write them)
     ports:
       - "3457:3456"
     volumes:

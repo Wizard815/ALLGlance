@@ -25,7 +25,8 @@ cd "$(dirname "$0")/.."
 ENV_FILE=.env.allglance
 dc() { docker compose --env-file "$ENV_FILE" "$@"; }
 say() { printf '\n==> %s\n' "$*"; }
-rand() { LC_ALL=C tr -dc 'a-f0-9' </dev/urandom | head -c "${1:-32}"; }
+# Random hex of length N (<=256). No early-closed pipe, so it is safe under pipefail.
+rand() { head -c 128 /dev/urandom | od -An -tx1 | tr -d ' \n' | cut -c1-"${1:-32}"; }
 get() { grep -E "^$1=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2-; }
 set_kv() { # set_kv KEY VALUE  (replace in place, or append)
   if grep -qE "^$1=" "$ENV_FILE"; then
