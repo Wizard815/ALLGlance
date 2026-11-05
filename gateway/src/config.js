@@ -49,6 +49,15 @@ export const config = {
     webUrl: env('LIFELANCE_WEB_URL', 'http://lifeglance:6868'),
     enabled: enabled(env('ENABLE_LIFELANCE', 'true')),
   },
+  // Shared WebDAV sync directory (the dayglance-sync service's data dir, mounted
+  // read-only). Every GLANCE app syncs a snapshot file here; with the shared
+  // sync passphrase the gateway reads lastGLANCE and lifeGLANCE (and could read
+  // dayGLANCE) straight from it. Empty dir = snapshot reading disabled and the
+  // adapters fall back to the Playwright reader.
+  sync: {
+    dir: env('GLANCE_SYNC_DIR', ''),
+    passphrase: env('GLANCE_SYNC_PASSPHRASE', ''),
+  },
   playwright: {
     // Launch the browser once and reuse it; GC between runs for cleanliness.
     headless: enabled(env('PLAYWRIGHT_HEADLESS', 'true')),

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createSyncFileStore, parseSnapshot, applyListDiff } from '../syncFileStore.mjs';
+import { createSyncFileStore, parseSnapshot, applyListDiff, encryptDoc, decryptEnvelope } from '../syncFileStore.mjs';
 import { startDayglanceMcpServer } from '../server.mjs';
 
 const snapshot = (data) => ({ schemaVersion: 1, appId: 'dayglance', version: 2, lastModified: '2026-11-05T00:00:00.000Z', data });
@@ -16,9 +16,32 @@ async function tmpFile(doc) {
 }
 const read = async (f) => JSON.parse(await readFile(f, 'utf8'));
 
-test('parseSnapshot rejects an encrypted/unknown envelope with a helpful message', () => {
-  assert.throws(() => parseSnapshot('{"encrypted":true,"iv":"x"}'), /end-to-end encryption/);
-  assert.throws(() => parseSnapshot('nope'), /not valid JSON/);
+test('parseSnapshot: invalid JSON and unknown shapes give clear errors', async () => {
+  await assert.rejects(parseSnapshot('nope'), /not valid JSON/);
+  await assert.rejects(parseSnapshot('{"hello":1}'), /unexpected format/);
+});
+
+test('encrypted snapshot: needs the shared passphrase; round-trips; keeps the file’s salt', async () => {
+  const salt = new Uint8Array(16).map((_, i) => i + 1);
+  const doc = snapshot({ tasks: [{ id: 'a', title: 'Dentist', lastModified: '2026-11-05T01:00:00.000Z' }], unscheduledTasks: [], recurringTasks: [], recycleBin: [] });
+  const env = await encryptDoc(doc, 'correct horse', salt);
+  assert.equal(env.enc, 'AES-GCM-256');
+  const file = await tmpFile(env);
+
+  await assert.rejects(parseSnapshot(JSON.stringify(env)), /DAYGLANCE_SYNC_PASSPHRASE/);
+  await assert.rejects(parseSnapshot(JSON.stringify(env), 'wrong'), /wrong DAYGLANCE_SYNC_PASSPHRASE/);
+
+  const store = createSyncFileStore({ file, passphrase: 'correct horse', now: () => '2026-11-05T09:00:00.000Z' });
+  assert.equal((await store.get()).state.tasks[0].title, 'Dentist');
+  const w = await store.beginWrite();
+  w.setters.setTasks([...w.state.tasks, { id: 'b', title: 'New' }]);
+  await store.commit();
+
+  const raw = await read(file);
+  assert.equal(raw.enc, 'AES-GCM-256', 'file stays encrypted');
+  const back = await decryptEnvelope(raw, 'correct horse');
+  assert.deepEqual([...back.salt], [...salt], 'same salt, so the apps’ cached keys still work');
+  assert.deepEqual(back.doc.data.tasks.map((t) => t.id), ['a', 'b']);
 });
 
 test('applyListDiff applies only this write’s changes onto the latest list', () => {

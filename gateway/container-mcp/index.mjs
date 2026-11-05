@@ -8,6 +8,8 @@
 //   DAYGLANCE_SYNC_FILE   path to dayGLANCE's WebDAV sync snapshot
 //                         (dayglance-sync.json). When set, the MCP reads and
 //                         writes the app's live data through it.
+//   DAYGLANCE_SYNC_PASSPHRASE  the sync passphrase set in dayGLANCE, needed only
+//                         when end-to-end encryption is on (to decrypt/re-encrypt).
 //   DAYGLANCE_STATE_FILE  (fallback) path to the JSON state document (default
 //                         /data/dayglance-state.json)
 //   TZ                    IANA timezone used to resolve "today" (default: host)

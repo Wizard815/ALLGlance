@@ -175,12 +175,16 @@ DAYGLANCE_MCP_TOKEN=secret DAYGLANCE_STATE_FILE=/data/dayglance-state.json node 
 | lastGLANCE | intents / localStorage adapter | Chore data natively flows as encrypted intents. |
 | lifeGLANCE | localStorage adapter | Milestones, no ownership model. |
 
+- **lastGLANCE / lifeGLANCE** are read from the snapshots they sync to the shared
+  WebDAV directory (see [Connecting the GLANCE apps](#connecting-the-glance-apps-one-time-per-device)).
+  The older browser-reader fallback (used only when `GLANCE_SYNC_DIR` is unset)
+  cannot work: lastGLANCE stores data in IndexedDB, not localStorage.
 - **`dayglance-mcp` state (automatic):** the stack runs `dayglance-sync`, a
   WebDAV server for dayGLANCE's built-in Cloud Sync. dayGLANCE syncs its whole
   planner to `dayglance-sync.json` there, and `dayglance-mcp` reads *and writes*
   that same file. So the gateway sees live app data, and tasks created or
   changed through MCP flow back into the app on its next sync. See
-  [Connecting dayGLANCE](#connecting-dayglance-one-time-per-device).
+  [Connecting the GLANCE apps](#connecting-the-glance-apps-one-time-per-device).
   If `DAYGLANCE_SYNC_FILE` is unset, the MCP falls back to a standalone JSON
   state document that starts empty (a read returns an empty day, never a
   fabricated one).
@@ -190,30 +194,53 @@ DAYGLANCE_MCP_TOKEN=secret DAYGLANCE_STATE_FILE=/data/dayglance-state.json node 
 - **GLANCEvault** is optional for the gateway; enable it only for multi-device
   sync + cross-app intents.
 
-## Connecting dayGLANCE (one time per device)
+## Connecting the GLANCE apps (one time per device)
 
-In each dayGLANCE (web, desktop, mobile): **Settings -> Sync -> WebDAV Sync**
-on, then:
+All three apps sync through the same engine, so they all point at the **same
+WebDAV server** (`dayglance-sync`) with the **same sync passphrase**:
 
 | Field | Value |
 |---|---|
 | Provider | Generic WebDAV |
-| URL | `http://<host>:8091` (web build inside this stack: `http://dayglance-sync:6065`) |
+| URL | `http://<host>:8091` (web builds inside this stack: `http://dayglance-sync:6065`) |
 | Username / password | `DAYGLANCE_SYNC_USER` / `DAYGLANCE_SYNC_PASSWORD` from `.env.allglance` |
-| Sync folder | `dayglance` (must match `DAYGLANCE_SYNC_FOLDER`) |
+| Encryption | on, with your sync passphrase — also set it as `GLANCE_SYNC_PASSPHRASE` in `.env.allglance` |
+| Sync folder | dayGLANCE: `dayglance` (must match `DAYGLANCE_SYNC_FOLDER`); lastGLANCE / lifeGLANCE: leave their defaults (`GLANCE/lastglance`, `GLANCE/lifeglance`) — the gateway finds the files wherever they are |
 
-Keep **end-to-end encryption off**: the MCP has to read the snapshot (if it is
-encrypted the MCP reports a clear error and never overwrites it). A device's
-first sync asks how to combine local and server data ("Merge both" is the safe
-choice). After that the app syncs automatically (on open, on change, and on a
-poll) and `dayglance-mcp` always reads the current file. Use `https://` if the
-sync server is reachable beyond your LAN.
+Where: dayGLANCE **Settings -> Sync**; lastGLANCE **Cloud Sync**; lifeGLANCE
+**sync**. A new device's first sync may ask how to combine local and server data
+("Merge both" is the safe choice).
 
-Verified end to end with a real dayGLANCE: a task created in the app reached
-`dayglance-mcp` without any manual step; tasks created, scheduled and completed
-through MCP arrived in the app; an inbox task scheduled via MCP moved to the
-calendar without a duplicate; and a completion made through MCP survived the
-app's next sync.
+**The key.** Yes: one passphrase is the shared key. Each app derives its key
+from the passphrase plus a salt stored in the file (PBKDF2-SHA256, AES-256-GCM),
+so the MCP and gateway, given the same passphrase, read every app's encrypted
+snapshot, and the MCP can write dayGLANCE's back (re-encrypting with the file's
+existing salt, so the apps never ask for the passphrase again). Without the
+passphrase an encrypted file is reported, never overwritten.
+
+**What flows where (all automatic once connected)**
+
+| App | Into the gateway | Back to the app |
+|---|---|---|
+| dayGLANCE | live tasks/blocks via `dayglance-mcp` | tasks created/changed through MCP appear on its next sync |
+| lastGLANCE | chores, last completion, cadence, overdue (from `lastglance-sync.json`) | read-only |
+| lifeGLANCE | milestones (from `lifeglance-sync.json`) | read-only |
+
+lastGLANCE and lifeGLANCE keep their data in browser IndexedDB, which nothing
+server-side can read; their Cloud Sync snapshot is the readable copy. They push
+on app open, on manual **Sync now**, and on their sync interval, so a change
+can take up to one interval to appear (dayGLANCE pushes sooner).
+
+Verified end to end with the real apps: a dayGLANCE task reached the MCP; tasks
+created, scheduled and completed through MCP reached the app, including with
+encryption on; a lifeGLANCE milestone and lastGLANCE chore completions made in
+their UIs appeared in the gateway's `/milestones` and `/chores`.
+
+**App-to-app handoff (lastGLANCE chore -> dayGLANCE task).** The apps have
+their own upstream "intents" integration for this (lastGLANCE **Settings ->
+Integration**, dayGLANCE **Settings -> Integrations**). It uses the same WebDAV
+server and passphrase (folder `GLANCE/events`). That handoff is upstream
+behavior and has **not** been exercised in this stack.
 
 ## Using the data from other tools
 
