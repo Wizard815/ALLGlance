@@ -64,11 +64,8 @@ services:
       # origin. Without these, cross-origin fetch/SSE is blocked.
       - GLANCEVAULT_ALLOWED_ORIGINS=${GLANCEVAULT_ALLOWED_ORIGINS:-}
       - GLANCEVAULT_TRUST_PROXY=${GLANCEVAULT_TRUST_PROXY:-loopback}
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/healthz"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
+    # No healthcheck override: the image has none of wget/curl, but ships its
+    # own node-based check against /healthz.
 
   # --- vikunja: the server-side hub, real DB, real API ---
   vikunja:
@@ -84,19 +81,20 @@ services:
       - ${ALLGLANCE_DATA:-/mnt/user/appdata/allglance-data}/vikunja/files:/app/vikunja/files
       - ${ALLGLANCE_DATA:-/mnt/user/appdata/allglance-data}/vikunja/logs:/app/vikunja/logs
     environment:
-      - VIKUNJA_SERVICE__SECRET=${VIKUNJA_SERVICE_SECRET:?set VIKUNJA_SERVICE_SECRET in .env.allglance}
-      - VIKUNJA_SERVICE__INTERFACE=:3456
-      - VIKUNJA_SERVICE__PUBLICURL=http://localhost:3457
-      - VIKUNJA_SERVICE__ENABLECALDAV=true
-      - VIKUNJA_SERVICE__ENABLEREGISTRATION=${VIKUNJA_ENABLE_REGISTRATION:-false}
-      - VIKUNJA_DATABASE__TYPE=sqlite
-      - VIKUNJA_DATABASE__PATH=/db/vikunja.db
-      - VIKUNJA_FILES__TYPE=local
-      - VIKUNJA_FILES__BASEPATH=/app/vikunja/files
-      - VIKUNJA_LOG__STANDARD=stdout
-      - VIKUNJA_LOG__LEVEL=INFO
+      - VIKUNJA_SERVICE_SECRET=${VIKUNJA_SERVICE_SECRET:?set VIKUNJA_SERVICE_SECRET in .env.allglance}
+      - VIKUNJA_SERVICE_INTERFACE=:3456
+      - VIKUNJA_SERVICE_PUBLICURL=http://localhost:3457
+      - VIKUNJA_SERVICE_ENABLECALDAV=true
+      - VIKUNJA_SERVICE_ENABLEREGISTRATION=${VIKUNJA_ENABLE_REGISTRATION:-false}
+      - VIKUNJA_DATABASE_TYPE=sqlite
+      - VIKUNJA_DATABASE_PATH=/db/vikunja.db
+      - VIKUNJA_FILES_TYPE=local
+      - VIKUNJA_FILES_BASEPATH=/app/vikunja/files
+      - VIKUNJA_LOG_STANDARD=stdout
+      - VIKUNJA_LOG_LEVEL=INFO
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3456/health"]
+      # The image is minimal (no wget/curl); the binary ships its own check.
+      test: ["CMD", "/app/vikunja/vikunja", "healthcheck"]
       interval: 10s
       timeout: 5s
       retries: 5

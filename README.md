@@ -184,6 +184,23 @@ DAYGLANCE_MCP_TOKEN=secret DAYGLANCE_STATE_FILE=/data/dayglance-state.json node 
 - **GLANCEvault** is optional for the gateway; enable it only for multi-device
   sync + cross-app intents.
 
+## Using the data from other tools
+
+Verified against a live Vikunja v2.7.1:
+
+- **CalDAV (tasks):** Vikunja serves tasks as VTODO at `http://<host>:3457/dav/`
+  (basic auth with your Vikunja user). A task created through the gateway
+  appears there as a VTODO with its due date, so any CalDAV tasks client
+  (Tasks.org, Apple Reminders, Thunderbird, Home Assistant's CalDAV
+  integration) can read and edit it.
+- **Home Assistant:** either its CalDAV integration pointed at Vikunja, or REST
+  calls to the gateway (`/api/allglance/tasks`, `/days/:date`), or the MCP
+  endpoint `/mcp`.
+- **Export:** `vikunja dump` (CLI, whole instance) and the v2
+  `/user/export/request` endpoint; CSV and other import via `/migration/*`.
+- dayGLANCE tasks are not in CalDAV by themselves; they reach the gateway through
+  `dayglance-mcp`.
+
 ## Unraid / appdata layout
 
 ```
