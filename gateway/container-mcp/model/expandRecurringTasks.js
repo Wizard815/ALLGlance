@@ -35,6 +35,10 @@ export function recurringTaskInstance(template, date) {
     // Project membership is series-level (stored on the template);
     // instances inherit it so project-filtered views keep occurrences.
     projectId: template.projectId,
+    // The series' creation (utils/createdAt.js), so the editor can show it and
+    // an occurrence turned into its own task (a cross-date drag spreads this
+    // object) inherits it rather than being stamped as created on the spot.
+    createdAt: template.createdAt ?? null,
     ...(template.isExample ? { isExample: true } : {}),
   };
 }

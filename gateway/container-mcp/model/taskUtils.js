@@ -55,6 +55,8 @@ export const completionTimestamp = (d = new Date()) => {
 const TAG_START = '\\p{L}';
 const TAG_BODY = '[\\p{L}\\p{N}_/-]';
 
+/** A tag name's pattern source, without the `#`, for a regex built with the `u` flag. */
+export const TAG_NAME_SOURCE = `${TAG_START}${TAG_BODY}*`;
 /** One character that may follow the first in a tag name. */
 export const TAG_BODY_CHAR = new RegExp(`^${TAG_BODY}$`, 'u');
 /** A whole tag name, without the leading `#`. */
@@ -66,7 +68,9 @@ export const TAG_NAME = new RegExp(`^${TAG_START}${TAG_BODY}*$`, 'u');
 // packages/agenda-core mirror this by hand.
 const WEB_ADDRESS = 'https?:\\/\\/[^\\s<>"{}|\\\\^`[\\]]+';
 // Safe to hoist despite the `g` flag: matchAll and replace reset lastIndex.
-const TAG_OR_ADDRESS = new RegExp(`(${WEB_ADDRESS})|#(${TAG_START}${TAG_BODY}*)`, 'gu');
+// Exported for the tag manager's rewrite (utils/tagManager.js), which must
+// read tags exactly as everything else does.
+export const TAG_OR_ADDRESS = new RegExp(`(${WEB_ADDRESS})|#(${TAG_START}${TAG_BODY}*)`, 'gu');
 
 /** The #tags in a text, without the `#`, case kept, web addresses skipped. */
 export const tagsIn = (text) => [...String(text ?? '').matchAll(TAG_OR_ADDRESS)]
@@ -74,7 +78,24 @@ export const tagsIn = (text) => [...String(text ?? '').matchAll(TAG_OR_ADDRESS)]
   .map((m) => m[2]);
 
 // Extract #hashtags from a task title (tags must start with a letter).
-export const extractTags = (title) => tagsIn(title).map(tag => tag.toLowerCase());
+//
+// Remembered by title (#2143): every tag list, filter and count re-reads every
+// title on each change, and most titles have not changed, so the regex ran
+// thousands of times per keystroke for the same answers. The arrays are
+// frozen because they are shared: a caller that wants to change one copies it.
+// The cache is bounded; past its size it starts over, which costs one pass.
+const TAG_CACHE_MAX = 20000;
+const tagCache = new Map();
+export const extractTags = (title) => {
+  const key = String(title ?? '');
+  let tags = tagCache.get(key);
+  if (!tags) {
+    if (tagCache.size >= TAG_CACHE_MAX) tagCache.clear();
+    tags = Object.freeze(tagsIn(key).map(tag => tag.toLowerCase()));
+    tagCache.set(key, tags);
+  }
+  return tags;
+};
 
 /** Drops every #tag from a text, leaving the whitespace around it and any web address whole. */
 export const stripTags = (text) => String(text ?? '').replace(TAG_OR_ADDRESS, (all, address) => (address ? all : ''));

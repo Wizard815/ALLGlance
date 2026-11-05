@@ -1,0 +1,35 @@
+name: Upstream watch
+
+# Weekly: compare the pinned dayGLANCE / lastGLANCE / lifeGLANCE / Vikunja
+# versions with their latest releases and keep ONE open issue listing what is
+# behind. Closing the loop is `scripts/upstream.sh bump <name>` (see README).
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check pins
+        id: status
+        run: |
+          set +e
+          ./scripts/upstream.sh status | tee status.txt
+          echo "behind=$([ ${PIPESTATUS[0]} -ne 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      - name: Open or update the tracking issue
+        if: steps.status.outputs.behind == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          body=$(printf 'Pinned upstream versions are behind their latest releases:\n\n```\n%s\n```\n\nUpgrade one at a time: `scripts/upstream.sh bump <name>`, then run the live checks in the README "Upkeep" section.\n' "$(cat status.txt)")
+          n=$(gh issue list --label upstream-update --state open --json number --jq '.[0].number')
+          if [ -n "$n" ]; then gh issue edit "$n" --body "$body"
+          else gh label create upstream-update --color 0e8a16 2>/dev/null || true
+               gh issue create --title "Upstream GLANCE/Vikunja updates available" --label upstream-update --body "$body"; fi
