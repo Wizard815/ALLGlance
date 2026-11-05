@@ -35,3 +35,15 @@ jobs:
         run: |
           touch .env.allglance
           GLANCEVAULT_DEVICE_TOKEN=x VIKUNJA_SERVICE_SECRET=x docker compose config -q
+
+  images:
+    # Build both AllGLANCE images. This is what would have caught a .dockerignore
+    # that excluded the lockfile the Dockerfile copies.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build dayglance-mcp and gateway images
+        run: |
+          touch .env.allglance
+          GLANCEVAULT_DEVICE_TOKEN=x VIKUNJA_SERVICE_SECRET=x DAYGLANCE_SYNC_PASSWORD=x \
+            docker compose build dayglance-mcp allglance-gateway
