@@ -46,6 +46,9 @@
 services:
   # --- glance-vault: zero-knowledge sync backend for the browser apps ---
   glance-vault:
+    # OPTIONAL and off by default (nothing in this stack needs it): enable with
+    #   docker compose --profile vault up -d
+    profiles: ["vault"]
     image: ghcr.io/glance-apps/glance-vault:latest
     container_name: allglance-glance-vault
     restart: unless-stopped
@@ -57,7 +60,7 @@ services:
     environment:
       - GLANCEVAULT_STORAGE_PATH=/data/glancevault.db
       - GLANCEVAULT_PORT=8080
-      - GLANCEVAULT_DEVICE_TOKEN=${GLANCEVAULT_DEVICE_TOKEN:?set GLANCEVAULT_DEVICE_TOKEN in .env.allglance}
+      - GLANCEVAULT_DEVICE_TOKEN=${GLANCEVAULT_DEVICE_TOKEN:-}
       - GLANCEVAULT_AUTH_MODE=${GLANCEVAULT_AUTH_MODE:-shared}
       # List every origin a browser client connects from. The dayglance Electron
       # desktop app sends Origin: app://dayglance; web builds send their public
