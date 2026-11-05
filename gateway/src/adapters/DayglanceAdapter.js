@@ -27,6 +27,7 @@
 
 import { BaseAdapter } from './BaseAdapter.js';
 import { taskOf } from '../model.js';
+import { readSnapshot } from '../lib/syncSnapshot.js';
 import { Roster } from '../identity/roster.js';
 import LocalStorageReader from '../transport/LocalStorageReader.js';
 import config from '../config.js';
@@ -245,7 +246,33 @@ export class DayglanceAdapter extends BaseAdapter {
     return taskOf('dayglance', { id: taskId, ...raw }, null);
   }
 
+  /**
+   * ALL of dayGLANCE's tasks (inbox + every scheduled day) from the planner
+   * snapshot the app syncs. The MCP can only read one day at a time, so without
+   * this a task scheduled for next week is invisible to list-style questions.
+   * Returns null when snapshot reading is off or the file is not there yet.
+   */
+  async #readSnapshotTasks() {
+    const sync = this.config.sync;
+    if (!sync?.dir && !sync?.dayglanceFile) return null;
+    const snap = await readSnapshot({
+      dir: sync.dir,
+      filename: 'dayglance-sync.json',
+      passphrase: sync.passphrase,
+      file: sync.dayglanceFile,
+    });
+    if (!snap) return null;
+    const { tasks = [], unscheduledTasks = [], users = [] } = snap.doc.data;
+    return this.#normalize({ tasks: [...tasks, ...unscheduledTasks], users }).tasks;
+  }
+
   async readTasks(owner = null) {
+    try {
+      const all = await this.#readSnapshotTasks();
+      if (all) return { tasks: owner ? all.filter((t) => t.owner_id === owner) : all };
+    } catch {
+      // unreadable snapshot (wrong passphrase, mid-write): fall back to the MCP view
+    }
     const { tasks } = await this.#read('today');
     return { tasks: owner ? tasks.filter((t) => t.owner_id === owner) : tasks };
   }

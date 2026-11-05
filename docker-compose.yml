@@ -212,6 +212,7 @@ services:
       # the shared WebDAV directory (their data lives in browser IndexedDB, which
       # nothing server-side can read). Same passphrase as the apps.
       - GLANCE_SYNC_DIR=/sync
+      - DAYGLANCE_SYNC_FILE=/sync/${DAYGLANCE_SYNC_FOLDER:-dayglance}/dayglance-sync.json
       - GLANCE_SYNC_PASSPHRASE=${GLANCE_SYNC_PASSPHRASE:-}
     depends_on:
       vikunja:
