@@ -75,3 +75,14 @@ test('requireToken accepts only the configured bearer token', () => {
   assert.equal(run('Bearer nope'), 401);
   assert.equal(run(undefined), 401);
 });
+
+test('dayGLANCE blocks from the MCP keep their owner (assignee_id)', async () => {
+  const { DayglanceAdapter } = await import('../src/adapters/DayglanceAdapter.js');
+  const a = new DayglanceAdapter({ config: { dayglance: { enabled: true, webUrl: 'http://x' }, playwright: { headless: true, timeoutMs: 1000 } }, roster: new Roster(), reader: { read: async () => ({}) } });
+  a.setTransport({ read: async () => ({ blocks: [{ id: 't1', type: 'task', title: 'Standup', date: '2026-11-05', start_time: '09:30', assignee_id: 'dad' }, { id: 't2', type: 'task', title: 'Nobody', date: '2026-11-05' }] }) }, 'mcp');
+  const all = await a.readBlocks('2026-11-05');
+  assert.equal(all.blocks.find((b) => b.id === 't1').owner_id, 'dad');
+  assert.equal(all.blocks.find((b) => b.id === 't2').owner_id, null);
+  const mine = await a.readBlocks('2026-11-05', 'dad');
+  assert.deepEqual(mine.blocks.map((b) => b.id), ['t1']);
+});
