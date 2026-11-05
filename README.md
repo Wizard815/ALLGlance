@@ -77,8 +77,10 @@ from one place.
 | `allglance_list_tasks` | Tasks across all sources (optional `owner_id`) | vikunja + dayGLANCE |
 | `allglance_list_days` | Time blocks + tasks for one date (optional `owner_id`) | dayGLANCE + vikunja |
 | `allglance_create_task` | Create a task (defaults to vikunja) | vikunja |
+| `allglance_update_task` | Update a task where it lives: done, priority, title, due date | vikunja |
 | `vikunja_list_tasks` | List vikunja tasks in open projects (optional `owner_id`) | vikunja |
 | `vikunja_create_task` | Create a vikunja task (needs `project_id`) | vikunja |
+| `vikunja_update_task` | Update a vikunja task (done, priority, title, due date) | vikunja |
 
 Each adapter registers its own tools, so adding an app = adding an adapter.
 
@@ -99,12 +101,24 @@ GET  /api/allglance/users                     → family roster
 GET  /api/allglance/tasks?owner=<id>          → tasks across sources
 GET  /api/allglance/days/:date?owner=<id>     → blocks + tasks for a date
 POST /api/allglance/tasks                     → create (vikunja)
+PATCH /api/allglance/tasks/:source/:id        → update {done, priority, title, due_date} (vikunja)
 GET  /api/allglance/chores?owner=<id>         → lastGLANCE chores
 GET  /api/allglance/milestones                → lifeGLANCE milestones
 GET  /api/allglance/vikunja/tasks             → vikunja tasks
 GET  /api/allglance/vikunja/projects          → vikunja projects
+PATCH /api/allglance/vikunja/tasks/:id        → update a vikunja task
 GET  /health                                  → per-adapter health + roster
 ```
+
+**Priority.** Every task carries `priority` (0 none, 1 low, 2 medium, 3 high,
+4 urgent, 5 do now; vikunja's scale) and `priority_label`. dayGLANCE's 0-3
+means the same for 0-3 (only inbox tasks have one). Apps that speak CalDAV use
+RFC 5545's PRIORITY (1 highest, 9 lowest); vikunja maps it as low 9,
+medium 5, high 3, urgent 2, do now 1, and `src/model.js` has the same mapping.
+
+**Access.** Set `GATEWAY_TOKEN` and every `/api/allglance/*` and `/mcp` call
+needs `Authorization: Bearer <token>` (`/health` stays open). Without it the
+gateway is open to anyone who can reach its port, and it says so on start.
 
 The "calendar" view **is** `/api/allglance/days/:date` — dayGLANCE's time blocks
 plus vikunja's tasks for that date come back together.

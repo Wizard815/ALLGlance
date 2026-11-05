@@ -104,6 +104,20 @@ export class Gateway {
     return { source: target.source, task };
   }
 
+  /** Update a task in its own source. Only vikunja is writable here; dayGLANCE
+   *  tasks change through its own MCP tools (dayglance_update_task,
+   *  dayglance_set_task_completion). */
+  async updateTask(source, id, patch) {
+    const target = this.#adapters.get(source);
+    if (!target) throw new GatewayError(`Unknown or disabled source ${source}`, 404);
+    if (typeof target.updateTask !== 'function') {
+      throw new GatewayError(source === 'dayglance'
+        ? 'dayGLANCE tasks are updated with its own MCP tools (dayglance_update_task, dayglance_set_task_completion)'
+        : `${source} tasks can't be updated through the gateway`, 501);
+    }
+    return { source, task: await target.updateTask(id, patch) };
+  }
+
   /** Fetch the family roster (dayGLANCE primary, vikunja secondary). */
   async refreshRoster() {
     const day = this.#adapters.get('dayglance');
@@ -159,6 +173,26 @@ export class Gateway {
         handler: async () => {
           const users = await this.refreshRoster();
           return { content: [{ type: 'text', text: JSON.stringify({ users }, null, 2) }] };
+        },
+      },
+      {
+        name: 'allglance_update_task',
+        description: 'Update a task where it lives (vikunja today): done, priority (0 none, 1 low, 2 medium, 3 high, 4 urgent, 5 do now), title or due_date.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            source: { type: 'string', description: "Task source, e.g. 'vikunja'" },
+            id: { type: 'string' },
+            done: { type: 'boolean' },
+            priority: { type: 'integer', minimum: 0, maximum: 5 },
+            title: { type: 'string' },
+            due_date: { type: ['string', 'null'] },
+          },
+          required: ['source', 'id'],
+        },
+        handler: async ({ source, id, ...patch }) => {
+          const result = await this.updateTask(source, id, patch);
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
         },
       },
       {
@@ -258,10 +292,28 @@ export class Gateway {
     });
     routes.push('/milestones');
 
+    // Update one task where it lives: PATCH /api/allglance/tasks/:source/:id
+    // with any of { done, priority (0-5), title, due_date }.
+    if (typeof app.patch === 'function') {
+      app.patch(`${basePath}/tasks/:source/:id`, async (req, res) => {
+        try {
+          res.json(await this.updateTask(req.params.source, req.params.id, req.body ?? {}));
+        } catch (err) {
+          res.status(err.status ?? 502).json({ error: err.message });
+        }
+      });
+      routes.push('/tasks/:source/:id (PATCH)');
+    }
+
+    // Adapters register paths like '/vikunja/tasks'; mount them under basePath
+    // so they live at /api/allglance/vikunja/tasks as documented.
+    const prefixed = Object.fromEntries(['get', 'post', 'put', 'patch', 'delete']
+      .filter((m) => typeof app[m] === 'function')
+      .map((m) => [m, (path, ...handlers) => app[m](`${basePath}${path}`, ...handlers)]));
     for (const adapter of this.adapters()) {
       try {
-        const sub = adapter.registerRoutes(app);
-        for (const r of sub) routes.push(`/${adapter.source}${r}`);
+        const sub = adapter.registerRoutes(prefixed);
+        for (const r of sub) routes.push(r);
       } catch {
         // adapter has no routes
       }
