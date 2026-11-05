@@ -19,6 +19,8 @@ export const config = {
   server: {
     port: Number(env('GATEWAY_PORT', 8090)),
     host: env('GATEWAY_HOST', '0.0.0.0'),
+    // When set, /api/allglance/* and /mcp require `Authorization: Bearer <token>`.
+    token: env('GATEWAY_TOKEN', ''),
   },
   vikunja: {
     url: env('VIKUNJA_URL', 'http://vikunja:3456'),
