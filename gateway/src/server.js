@@ -26,8 +26,7 @@ function buildServer() {
   const app = express();
   app.use(express.json({ limit: '5mb' }));
 
-  // Wire dayGLANCE's transport onto its adapter. Prefer the desktop MCP path
-  // (fast, loopback); fall back to Playwright when it isn't reachable.
+  // Wire dayGLANCE's transport onto its adapter.
   const dayAdapter = gateway.adapters().find((a) => a.source === 'dayglance');
   if (dayAdapter) {
     const mcp = new DayglanceMcpClient({
@@ -35,15 +34,26 @@ function buildServer() {
       port: config.dayglance.mcpPort,
       token: config.dayglance.mcpToken || undefined,
     });
-    mcp.status().then((s) => {
-      if (s?.ok) {
-        console.log('[gateway] dayGLANCE MCP reachable on', config.dayglance.mcpPort, '— using transport A');
-        dayAdapter.setTransport({ read: (date) => mcp.read(date), call: (name, args) => mcp.call(name, args) }, 'mcp');
-      } else {
-        console.log('[gateway] dayGLANCE MCP unavailable — Playwright fallback active');
-        dayAdapter.setTransport({ read: () => dayAdapter.readLocalStorage() }, 'playwright');
-      }
-    });
+    const mcpTransport = { read: (date) => mcp.read(date), call: (name, args) => mcp.call(name, args) };
+    if (process.env.DAYGLANCE_MCP_HOST) {
+      // Deployed with a dayglance-mcp service (the compose stack): always use it
+      // and connect lazily on each call. Deciding once at boot made dayGLANCE
+      // permanently unavailable whenever the MCP was not listening in that
+      // instant (startup order, an MCP restart or upgrade).
+      console.log(`[gateway] dayGLANCE via MCP at ${config.dayglance.mcpHost}:${config.dayglance.mcpPort} (connects on demand)`);
+      dayAdapter.setTransport(mcpTransport, 'mcp');
+    } else {
+      // Desktop app on this host: prefer its MCP, else the legacy browser reader.
+      mcp.status().then((s) => {
+        if (s?.ok) {
+          console.log('[gateway] dayGLANCE MCP reachable on', config.dayglance.mcpPort, '- using transport A');
+          dayAdapter.setTransport(mcpTransport, 'mcp');
+        } else {
+          console.log('[gateway] dayGLANCE MCP unavailable - Playwright fallback active');
+          dayAdapter.setTransport({ read: () => dayAdapter.readLocalStorage() }, 'playwright');
+        }
+      });
+    }
   }
 
   // Health + introspection.

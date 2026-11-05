@@ -166,6 +166,9 @@ services:
       # The household sync passphrase (same one entered in every GLANCE app).
       # Needed only if end-to-end encryption is on; blank otherwise.
       - DAYGLANCE_SYNC_PASSPHRASE=${GLANCE_SYNC_PASSPHRASE:-}
+      # Keeps intent event files readable across the GLANCE apps (dayGLANCE names
+      # completion events with a UUID that lastGLANCE's poller ignores).
+      - DAYGLANCE_EVENTS_ROOT=/sync
       - TZ=${TZ:-UTC}
     volumes:
       # Shared state document; also imported by the gateway so it can seed /
@@ -216,7 +219,7 @@ services:
       dayglance:
         condition: service_started
       dayglance-mcp:
-        condition: service_started
+        condition: service_healthy
     volumes:
       # Persist the roster cache + any MCP config across container recreation.
       - ${ALLGLANCE_DATA:-/mnt/user/appdata/allglance-data}/gateway:/data

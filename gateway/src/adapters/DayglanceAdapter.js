@@ -182,7 +182,12 @@ export class DayglanceAdapter extends BaseAdapter {
     if (!this.#transport || typeof this.#transport.call !== 'function') {
       throw new Error('dayGLANCE writes need its MCP transport (dayglance-mcp is not reachable)');
     }
-    return this.#transport.call(name, args);
+    return this.#transport.call(name, args).catch((err) => {
+      if (/fetch failed|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|timed? ?out|aborted/i.test(`${err.message} ${err.cause?.code ?? ''}`)) {
+        throw new Error('dayGLANCE is temporarily unreachable (its MCP service is not responding). The task was not changed; try again shortly.');
+      }
+      throw err;
+    });
   }
 
   /**

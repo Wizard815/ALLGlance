@@ -16,6 +16,17 @@ import { compactTask, compactBlock, compactChore, compactMilestone, byDue, today
 const json = (data) => ({ content: [{ type: 'text', text: JSON.stringify(data) }] });
 const DATE = 'YYYY-MM-DD';
 
+/** Turn transport failures into something an agent can act on (and not retry blindly). */
+export function explain(err, source) {
+  const msg = String(err?.message ?? err);
+  const app = source === 'dayglance' ? 'dayGLANCE' : source === 'vikunja' ? 'Vikunja' : (source ?? 'a backing service');
+  if (/-> (401|403) /.test(msg)) return new Error(`${app} refused the gateway's credentials (HTTP ${/-> (\d+) /.exec(msg)[1]}). The operator needs to check the API token in the gateway's configuration; retrying will not help.`);
+  if (/fetch failed|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|timed? ?out|aborted/i.test(`${msg} ${err?.cause?.code ?? ''}`)) {
+    return new Error(`${app} is temporarily unreachable. Nothing was changed; try again shortly.`);
+  }
+  return err;
+}
+
 export function buildTools(gw) {
   return [
     {
@@ -115,8 +126,12 @@ export function buildTools(gw) {
         required: ['title'],
       },
       handler: async (args) => {
-        const { task, source } = await gw.createTask(args);
-        return json({ created: compactTask(task), source });
+        try {
+          const { task, source } = await gw.createTask(args);
+          return json({ created: compactTask(task), source });
+        } catch (err) {
+          throw explain(err, args?.source ?? 'vikunja');
+        }
       },
     },
     {
@@ -141,8 +156,12 @@ export function buildTools(gw) {
         required: ['source', 'id'],
       },
       handler: async ({ source, id, ...patch }) => {
-        const { task } = await gw.updateTask(source, id, patch);
-        return json({ updated: compactTask(task) });
+        try {
+          const { task } = await gw.updateTask(source, id, patch);
+          return json({ updated: compactTask(task) });
+        } catch (err) {
+          throw explain(err, source);
+        }
       },
     },
   ];

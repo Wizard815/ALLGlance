@@ -11,6 +11,11 @@ import { DayglanceAdapter } from './adapters/DayglanceAdapter.js';
 import { LastglanceAdapter } from './adapters/LastglanceAdapter.js';
 import { LifeglanceAdapter } from './adapters/LifeglanceAdapter.js';
 
+/** `{ unavailable, note }` fields for a tool result, or nothing when all sources answered. */
+const unavailableNote = (list) => (list.length
+  ? { unavailable: [...new Set(list)], note: 'These sources could not be reached just now, so this answer leaves them out. Do not treat it as complete; try again shortly.' }
+  : {});
+
 class GatewayError extends Error {
   constructor(message, status = 500) {
     super(message);
@@ -60,16 +65,27 @@ export class Gateway {
 
   /** Read tasks across all sources, optionally scoped to an owner. */
   async readTasks(owner = null) {
-    const out = { vikunja: [], dayglance: [], lastglance: [], lifeglance: [] };
+    return (await this.readTasksDetailed(owner)).by;
+  }
+
+  /**
+   * Like readTasks, but also says which sources could not be read (network down,
+   * bad credentials...). One failing source never aborts the rest, but callers
+   * that answer an agent must not present a partial answer as the whole one.
+   * @returns {Promise<{ by: Record<string, object[]>, unavailable: string[] }>}
+   */
+  async readTasksDetailed(owner = null) {
+    const by = { vikunja: [], dayglance: [], lastglance: [], lifeglance: [] };
+    const unavailable = [];
     for (const a of this.adapters()) {
       try {
         const { tasks } = await a.readTasks(owner);
-        out[a.source] = tasks;
+        by[a.source] = tasks;
       } catch {
-        // Skip adapters that fail (e.g. network down) rather than aborting.
+        unavailable.push(a.source);
       }
     }
-    return out;
+    return { by, unavailable };
   }
 
   /** Read the day's time blocks (dayGLANCE) for one date, optionally scoped. */
@@ -151,7 +167,7 @@ export class Gateway {
    * when either is set.
    */
   async listTasks({ status = 'open', source, owner_id = null, due_on_or_before, due_on_or_after, limit = 50 } = {}) {
-    const by = await this.readTasks(owner_id);
+    const { by, unavailable } = await this.readTasksDetailed(owner_id);
     let all = ['vikunja', 'dayglance'].flatMap((s) => by[s] ?? []);
     if (source) all = all.filter((t) => t.source === source);
     if (status === 'open') all = all.filter((t) => !t.completed);
@@ -160,20 +176,29 @@ export class Gateway {
     if (due_on_or_after) all = all.filter((t) => t.due_date && t.due_date >= due_on_or_after);
     all.sort(byDue);
     const n = Math.max(1, Math.min(200, Number(limit) || 50));
-    return { total: all.length, returned: Math.min(n, all.length), truncated: all.length > n, tasks: all.slice(0, n).map(compactTask) };
+    return {
+      total: all.length, returned: Math.min(n, all.length), truncated: all.length > n, tasks: all.slice(0, n).map(compactTask),
+      ...unavailableNote(unavailable.filter((u) => ['vikunja', 'dayglance'].includes(u) && (!source || u === source))),
+    };
   }
 
   /** One day: dayGLANCE blocks in time order + open tasks due that day + overdue count. */
   async getDay(date, owner = null) {
-    const blocks = await this.readBlocks(date, owner);
-    const by = await this.readTasks(owner);
+    let blocks = [];
+    let blocksFailed = false;
+    try { blocks = await this.readBlocks(date, owner); } catch { blocksFailed = true; }
+    const { by, unavailable } = await this.readTasksDetailed(owner);
+    if (blocksFailed && !unavailable.includes('dayglance') && this.has('dayglance')) unavailable.push('dayglance');
     const all = ['vikunja', 'dayglance'].flatMap((s) => by[s] ?? []);
     const inBlocks = new Set(blocks.map((b) => String(b.id)));
     const tasks = all.filter((t) => !t.completed && t.due_date === date && !inBlocks.has(String(t.id)));
     const overdue = all.filter((t) => !t.completed && t.due_date && t.due_date < date).length;
     tasks.sort(byDue);
     const ordered = [...blocks].sort((a, b) => String(a.start_time ?? '').localeCompare(String(b.start_time ?? '')));
-    return { date, blocks: ordered.map(compactBlock), tasks: tasks.map(compactTask), overdue_count: overdue };
+    return {
+      date, blocks: ordered.map(compactBlock), tasks: tasks.map(compactTask), overdue_count: overdue,
+      ...unavailableNote(unavailable.filter((u) => ['vikunja', 'dayglance'].includes(u))),
+    };
   }
 
   async listChores({ overdue_only = false, owner_id = null, limit = 50 } = {}) {

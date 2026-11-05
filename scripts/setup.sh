@@ -91,7 +91,7 @@ if [[ -z "$(get VIKUNJA_TOKEN)" ]]; then
         -d "{\"username\":\"$VUSER\",\"password\":\"$VPASS\"}" | sed -E 's/.*"token":"([^"]+)".*/\1/')
   EXPIRES=$(date -u -d '+5 years' +%Y-%m-%dT00:00:00Z 2>/dev/null || date -u -v+5y +%Y-%m-%dT00:00:00Z)
   TOKEN=$(curl -fsS -X POST "http://localhost:$PORT/api/v2/tokens" -H "Authorization: Bearer $JWT" -H 'content-type: application/json' \
-        -d "{\"title\":\"allglance-gateway\",\"expires_at\":\"$EXPIRES\",\"permissions\":{\"mcp\":[\"access\"],\"projects\":[\"read_all\",\"read_one\"],\"tasks\":[\"read_all\",\"read_one\",\"create\",\"update\"],\"tasks_assignees\":[\"create\",\"read_all\"]}}" \
+        -d "{\"title\":\"allglance-gateway\",\"expires_at\":\"$EXPIRES\",\"permissions\":{\"mcp\":[\"access\"],\"projects\":[\"read_all\",\"read_one\",\"users_search\"],\"tasks\":[\"read_all\",\"read_one\",\"create\",\"update\"],\"tasks_assignees\":[\"create\",\"read_all\"]}}" \
         | sed -E 's/.*"token":"(tk_[^"]+)".*/\1/')
   [[ "$TOKEN" == tk_* ]] || { echo "could not create the Vikunja API token" >&2; exit 1; }
   set_kv VIKUNJA_TOKEN "$TOKEN"
