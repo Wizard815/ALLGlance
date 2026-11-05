@@ -2,6 +2,8 @@
 // Handles the unification layer (DESIGN.md §5), per-user scoping via the roster,
 // and delegates MCP tool + REST route registration to each adapter.
 
+import { buildTools } from './mcp/tools.js';
+import { compactTask, compactBlock, compactChore, compactMilestone, byDue } from './mcp/format.js';
 import { Roster } from './identity/roster.js';
 import config from './config.js';
 import { VikunjaAdapter } from './adapters/VikunjaAdapter.js';
@@ -104,16 +106,15 @@ export class Gateway {
     return { source: target.source, task };
   }
 
-  /** Update a task in its own source. Only vikunja is writable here; dayGLANCE
-   *  tasks change through its own MCP tools (dayglance_update_task,
-   *  dayglance_set_task_completion). */
+  /** Update a task in its own source: vikunja (REST) or dayGLANCE (its MCP).
+   *  lastGLANCE and lifeGLANCE data is owned by those apps and is read-only here. */
   async updateTask(source, id, patch) {
     const target = this.#adapters.get(source);
     if (!target) throw new GatewayError(`Unknown or disabled source ${source}`, 404);
     if (typeof target.updateTask !== 'function') {
       throw new GatewayError(source === 'dayglance'
-        ? 'dayGLANCE tasks are updated with its own MCP tools (dayglance_update_task, dayglance_set_task_completion)'
-        : `${source} tasks can't be updated through the gateway`, 501);
+        ? 'dayGLANCE tasks cannot be updated right now'
+        : `${source} data is read-only here (change it in the ${source} app)`, 501);
     }
     return { source, task: await target.updateTask(id, patch) };
   }
@@ -144,104 +145,61 @@ export class Gateway {
     return this.roster.list();
   }
 
-  /** Register MCP tools on the given server instance. */
-  registerMcpTools(server) {
-    const builtins = [
-      {
-        name: 'allglance_list_tasks',
-        description: 'List tasks across all sources. Optional owner_id scopes to one family member.',
-        inputSchema: {
-          type: 'object',
-          properties: { owner_id: { type: 'string' } },
-        },
-        handler: async (args) => {
-          const tasks = await this.readTasks(args?.owner_id ?? null);
-          return { content: [{ type: 'text', text: JSON.stringify(tasks, null, 2) }] };
-        },
-      },
-      {
-        name: 'allglance_list_days',
-        description: 'Read a day time blocks + tasks for one date.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            date: { type: 'string', description: "YYYY-MM-DD" },
-            owner_id: { type: 'string' },
-          },
-          required: ['date'],
-        },
-        handler: async (args) => {
-          const blocks = await this.readBlocks(args.date, args?.owner_id ?? null);
-          const tasks = await this.readTasks(args?.owner_id ?? null);
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify({ date: args.date, blocks, tasks }, null, 2),
-              },
-            ],
-          };
-        },
-      },
-      {
-        name: 'allglance_list_users',
-        description: 'List the family roster (who is who).',
-        inputSchema: { type: 'object', properties: {} },
-        handler: async () => {
-          const users = await this.refreshRoster();
-          return { content: [{ type: 'text', text: JSON.stringify({ users }, null, 2) }] };
-        },
-      },
-      {
-        name: 'allglance_update_task',
-        description: 'Update a task where it lives (vikunja today): done, priority (0 none, 1 low, 2 medium, 3 high, 4 urgent, 5 do now), title or due_date.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            source: { type: 'string', description: "Task source, e.g. 'vikunja'" },
-            id: { type: 'string' },
-            done: { type: 'boolean' },
-            priority: { type: 'integer', minimum: 0, maximum: 5 },
-            title: { type: 'string' },
-            due_date: { type: ['string', 'null'] },
-          },
-          required: ['source', 'id'],
-        },
-        handler: async ({ source, id, ...patch }) => {
-          const result = await this.updateTask(source, id, patch);
-          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
-        },
-      },
-      {
-        name: 'allglance_create_task',
-        description: 'Create a task in the default source (vikunja) or a specified one.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            title: { type: 'string' },
-            due_date: { type: 'string' },
-            owner_id: { type: 'string' },
-            project_id: { type: 'integer' },
-          },
-          required: ['title'],
-        },
-        handler: async (args) => {
-          const result = await this.createTask(args);
-          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
-        },
-      },
-    ];
+  /**
+   * Tasks across Vikunja and dayGLANCE, filtered and compacted for an agent.
+   * due_on_or_before / due_on_or_after are inclusive; undated tasks are excluded
+   * when either is set.
+   */
+  async listTasks({ status = 'open', source, owner_id = null, due_on_or_before, due_on_or_after, limit = 50 } = {}) {
+    const by = await this.readTasks(owner_id);
+    let all = ['vikunja', 'dayglance'].flatMap((s) => by[s] ?? []);
+    if (source) all = all.filter((t) => t.source === source);
+    if (status === 'open') all = all.filter((t) => !t.completed);
+    else if (status === 'done') all = all.filter((t) => t.completed);
+    if (due_on_or_before) all = all.filter((t) => t.due_date && t.due_date <= due_on_or_before);
+    if (due_on_or_after) all = all.filter((t) => t.due_date && t.due_date >= due_on_or_after);
+    all.sort(byDue);
+    const n = Math.max(1, Math.min(200, Number(limit) || 50));
+    return { total: all.length, returned: Math.min(n, all.length), truncated: all.length > n, tasks: all.slice(0, n).map(compactTask) };
+  }
 
-    const registered = [...builtins];
-    for (const adapter of this.adapters()) {
-      try {
-        const extra = adapter.registerTools(server);
-        for (const t of extra) registered.push(t);
-      } catch {
-        // adapter has no tools to register
-      }
-    }
-    return registered;
+  /** One day: dayGLANCE blocks in time order + open tasks due that day + overdue count. */
+  async getDay(date, owner = null) {
+    const blocks = await this.readBlocks(date, owner);
+    const by = await this.readTasks(owner);
+    const all = ['vikunja', 'dayglance'].flatMap((s) => by[s] ?? []);
+    const inBlocks = new Set(blocks.map((b) => String(b.id)));
+    const tasks = all.filter((t) => !t.completed && t.due_date === date && !inBlocks.has(String(t.id)));
+    const overdue = all.filter((t) => !t.completed && t.due_date && t.due_date < date).length;
+    tasks.sort(byDue);
+    const ordered = [...blocks].sort((a, b) => String(a.start_time ?? '').localeCompare(String(b.start_time ?? '')));
+    return { date, blocks: ordered.map(compactBlock), tasks: tasks.map(compactTask), overdue_count: overdue };
+  }
+
+  async listChores({ overdue_only = false, owner_id = null, limit = 50 } = {}) {
+    let chores = await this.readChores(owner_id);
+    if (overdue_only) chores = chores.filter((c) => c.overdue === true);
+    chores = [...chores].sort((a, b) => (b.overdue === true) - (a.overdue === true) || String(a.due_date ?? '9').localeCompare(String(b.due_date ?? '9')));
+    const n = Math.max(1, Math.min(200, Number(limit) || 50));
+    return { total: chores.length, returned: Math.min(n, chores.length), truncated: chores.length > n, chores: chores.slice(0, n).map(compactChore) };
+  }
+
+  async listMilestones({ from, to, limit = 50 } = {}) {
+    let ms = await this.readMilestones();
+    if (from) ms = ms.filter((m) => m.date && m.date >= from);
+    if (to) ms = ms.filter((m) => m.date && m.date <= to);
+    ms = [...ms].sort((a, b) => String(b.date ?? '').localeCompare(String(a.date ?? '')));
+    const n = Math.max(1, Math.min(200, Number(limit) || 50));
+    return { total: ms.length, returned: Math.min(n, ms.length), truncated: ms.length > n, milestones: ms.slice(0, n).map(compactMilestone) };
+  }
+
+  /**
+   * The MCP tool surface (see mcp/tools.js). The per-adapter vikunja_* tools are
+   * intentionally NOT included: allglance_* covers them, and two overlapping
+   * tool sets make agents pick worse. Their REST routes remain.
+   */
+  registerMcpTools() {
+    return buildTools(this);
   }
 
   /** Register REST routes under the gateway base path. */
@@ -270,9 +228,12 @@ export class Gateway {
 
     app.get(`${basePath}/days/:date`, async (req, res) => {
       try {
-        const blocks = await this.readBlocks(req.params.date, req.query.owner ?? null);
-        const tasks = await this.readTasks(req.query.owner ?? null);
-        res.json({ date: req.params.date, blocks, tasks });
+        const date = req.params.date;
+        const blocks = await this.readBlocks(date, req.query.owner ?? null);
+        const all = await this.readTasks(req.query.owner ?? null);
+        // "for that date": only tasks due/scheduled that day, per source.
+        const tasks = Object.fromEntries(Object.entries(all).map(([src, list]) => [src, list.filter((t) => t.due_date === date)]));
+        res.json({ date, blocks, tasks });
       } catch (err) {
         res.status(502).json({ error: err.message });
       }

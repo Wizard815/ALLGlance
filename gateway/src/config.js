@@ -33,7 +33,14 @@ export const config = {
     mcp: {
       enabled: enabled(env('ENABLE_VIKUNJA_MCP', 'true')),
       token: env('VIKUNJA_MCP_TOKEN', ''),
+      // Which native tools to expose: 'meta' = find_action / do_action /
+      // filter_syntax only (default; reaches everything without 11 extra tools),
+      // 'all' = every native tool, 'off' = none.
+      tools: env('VIKUNJA_NATIVE_TOOLS', 'meta'),
     },
+    // Project new tasks land in when the caller names none (id). Empty = the
+    // first project Vikunja lists (normally Inbox).
+    defaultProjectId: env('VIKUNJA_DEFAULT_PROJECT_ID', ''),
   },
   dayglance: {
     // Host of dayGLANCE's MCP listener. In the container stack this is the

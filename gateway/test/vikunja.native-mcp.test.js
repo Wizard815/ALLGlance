@@ -11,6 +11,8 @@ import config from '../src/config.js';
 const TOOLS = [
   { name: 'tasks_list', description: 'List tasks across all projects.', inputSchema: { type: 'object', properties: { filter: { type: 'string' } } } },
   { name: 'find_action', description: 'Discover additional actions.', inputSchema: { type: 'object', properties: { resource: { type: 'string' } } } },
+  { name: 'do_action', description: 'Invoke an action.', inputSchema: { type: 'object', properties: { action: { type: 'string' } } } },
+  { name: 'filter_syntax', description: 'Filter reference.', inputSchema: { type: 'object', properties: {} } },
 ];
 
 function fakeVikunja({ allow = true } = {}) {
@@ -37,7 +39,7 @@ function fakeVikunja({ allow = true } = {}) {
 }
 
 const cfgFor = (url, extra = {}) => ({
-  vikunja: { enabled: true, url, token: 'mcp-token', mcp: { enabled: true, token: '', ...extra } },
+  vikunja: { enabled: true, url, token: 'mcp-token', mcp: { enabled: true, token: '', tools: 'all', ...extra } },
   playwright: {}, sync: { dir: '' }, dayglance: {}, lastglance: {}, lifeglance: {},
 });
 
@@ -49,8 +51,8 @@ describe('vikunja native MCP tools', () => {
   it('discovers native tools, prefixes them, keeps their schemas, and forwards calls', async () => {
     const a = new VikunjaAdapter({ config: cfgFor(fake.url), roster: new Roster() });
     const tools = await a.dynamicTools();
-    deepEqual(tools.map((t) => t.name), ['vikunja_native_tasks_list', 'vikunja_native_find_action']);
-    ok(tools[0].description.startsWith('[Vikunja native]'));
+    deepEqual(tools.map((t) => t.name), ['vikunja_native_tasks_list', 'vikunja_native_find_action', 'vikunja_native_do_action', 'vikunja_native_filter_syntax']);
+    ok(tools[0].description.startsWith('[Vikunja native, advanced'));
     equal(tools[0].inputSchema.properties.filter.type, 'string');
     const out = await tools[0].handler({ filter: 'done = false' });
     equal(JSON.parse(out.content[0].text).echoed.name, 'tasks_list');
@@ -72,21 +74,27 @@ describe('vikunja native MCP tools', () => {
     f.srv.close();
   });
 
+  it('by default exposes only the three discovery tools (not 11 near-duplicates)', async () => {
+    const a = new VikunjaAdapter({ config: cfgFor(fake.url, { tools: 'meta' }), roster: new Roster() });
+    deepEqual((await a.dynamicTools()).map((t) => t.name), ['vikunja_native_find_action', 'vikunja_native_do_action', 'vikunja_native_filter_syntax']);
+    deepEqual(await new VikunjaAdapter({ config: cfgFor(fake.url, { tools: 'off' }), roster: new Roster() }).dynamicTools(), []);
+  });
+
   it('can be switched off, and has its own token override', async () => {
     const off = new VikunjaAdapter({ config: cfgFor(fake.url, { enabled: false }), roster: new Roster() });
     deepEqual(await off.dynamicTools(), []);
     const own = new VikunjaAdapter({ config: { ...cfgFor(fake.url, { token: 'mcp-token' }), vikunja: { enabled: true, url: fake.url, token: 'rest-only', mcp: { enabled: true, token: 'mcp-token' } } }, roster: new Roster() });
-    equal((await own.dynamicTools()).length, 2);
+    equal((await own.dynamicTools()).length, 3); // default mode: the three discovery tools
   });
 
   it('Gateway.dynamicMcpTools merges adapters’ dynamic tools and status reports the count', async () => {
     const saved = { ...config.vikunja };
-    Object.assign(config.vikunja, { enabled: true, url: fake.url, token: 'mcp-token', mcp: { enabled: true, token: '' } });
+    Object.assign(config.vikunja, { enabled: true, url: fake.url, token: 'mcp-token', mcp: { enabled: true, token: '', tools: 'meta' } });
     try {
       const gw = new Gateway();
       const names = (await gw.dynamicMcpTools()).map((t) => t.name);
-      deepEqual(names, ['vikunja_native_tasks_list', 'vikunja_native_find_action']);
-      equal((await gw.adapters().find((x) => x.source === 'vikunja').status()).nativeMcpTools, 2);
+      deepEqual(names, ['vikunja_native_find_action', 'vikunja_native_do_action', 'vikunja_native_filter_syntax']);
+      equal((await gw.adapters().find((x) => x.source === 'vikunja').status()).nativeMcpTools, 3);
     } finally {
       Object.assign(config.vikunja, saved);
     }

@@ -18,6 +18,9 @@ import { fetchJson } from '../lib/fetch.js';
 import McpHttpClient from '../transport/McpHttpClient.js';
 
 const NATIVE_PREFIX = 'vikunja_native_';
+// The discovery tools: with find_action/do_action an agent can reach every other
+// Vikunja action its token allows, without a dozen near-duplicate tools.
+const NATIVE_META = new Set(['find_action', 'do_action', 'filter_syntax']);
 const NATIVE_TTL_MS = 5 * 60 * 1000;
 
 export class VikunjaAdapter extends BaseAdapter {
@@ -55,14 +58,15 @@ export class VikunjaAdapter extends BaseAdapter {
    * lacks mcp.access. Native tools are Vikunja's own: they are NOT owner-scoped.
    */
   async dynamicTools() {
-    if (!this.enabled || !this.#nativeEnabled) return [];
+    const mode = this.config.vikunja.mcp?.tools ?? 'meta';
+    if (!this.enabled || !this.#nativeEnabled || mode === 'off') return [];
     if (Date.now() - this.#nativeCache.at < NATIVE_TTL_MS) return this.#nativeCache.tools;
     let tools = [];
     try {
       const listed = await this.#native.listTools();
-      tools = listed.map((t) => ({
+      tools = listed.filter((t) => mode === 'all' || NATIVE_META.has(t.name)).map((t) => ({
         name: `${NATIVE_PREFIX}${t.name}`,
-        description: `[Vikunja native] ${t.description ?? ''}`.trim(),
+        description: `[Vikunja native, advanced: not owner-scoped. Prefer the allglance_* tools for everyday task work.] ${t.description ?? ''}`.trim(),
         inputSchema: t.inputSchema ?? { type: 'object', properties: {} },
         handler: async (args) => this.#native.callTool(t.name, args ?? {}),
       }));
@@ -153,13 +157,31 @@ export class VikunjaAdapter extends BaseAdapter {
   }
 
   /** Create a task in vikunja. Returns the canonical task or null on failure. */
-  async writeTask({ title, due_date, owner_id, project_id }) {
-    const project = Number(project_id);
-    if (!project) return null;
+  /**
+   * Resolve the project a new task goes in: a numeric id, a project NAME
+   * (case-insensitive), or — when none is given — VIKUNJA_DEFAULT_PROJECT_ID, else
+   * the first project Vikunja lists (normally Inbox).
+   */
+  async #resolveProject(project) {
+    const given = project === undefined || project === null || project === '' ? this.config.vikunja.defaultProjectId : project;
+    if (given !== undefined && given !== '' && /^\d+$/.test(String(given))) return Number(given);
+    const projects = await this.#paginate('/api/v2/projects');
+    if (given !== undefined && given !== '') {
+      const hit = projects.find((p) => String(p.title ?? '').toLowerCase() === String(given).toLowerCase());
+      if (!hit) throw new Error(`No Vikunja project named "${given}". Projects: ${projects.map((p) => p.title).join(', ')}`);
+      return hit.id;
+    }
+    if (!projects.length) throw new Error('Vikunja has no projects to put the task in');
+    return projects[0].id;
+  }
+
+  async writeTask({ title, due_date, owner_id, project_id, project, priority }) {
+    const resolved = await this.#resolveProject(project ?? project_id);
     const payload = { title };
+    if (priority !== undefined) payload.priority = toPriority(priority);
     // Task fields are `due_date` (RFC3339); a bare YYYY-MM-DD is promoted to UTC midnight.
     if (due_date) payload.due_date = /^\d{4}-\d{2}-\d{2}$/.test(due_date) ? `${due_date}T00:00:00Z` : due_date;
-    const data = await fetchJson(`${this.#baseUrl}/api/v2/projects/${project}/tasks`, {
+    const data = await fetchJson(`${this.#baseUrl}/api/v2/projects/${resolved}/tasks`, {
       method: 'POST',
       headers: { ...this.#auth() },
       body: payload,
@@ -178,7 +200,7 @@ export class VikunjaAdapter extends BaseAdapter {
         }).catch(() => null);
       }
     }
-    return taskOf('vikunja', { ...data, project_id: project }, null, data.title);
+    return taskOf('vikunja', { ...data, project_id: resolved }, null, data.title);
   }
 
   /**

@@ -52,6 +52,8 @@ const toCaldavRange = (p) => Math.max(0, Math.min(9, Math.round(Number(p) || 0))
 /** Normalize an ISO timestamp or date string to a 'YYYY-MM-DD' date. */
 export function toDate(iso) {
   if (!iso) return null;
+  // Vikunja (Go) serializes "no date" as the zero time, 0001-01-01.
+  if (typeof iso === 'string' && iso.startsWith('0001-01-01')) return null;
   if (typeof iso === 'string' && /^\d{4}-\d{2}-\d{2}/.test(iso)) {
     return iso.slice(0, 10);
   }
@@ -75,7 +77,7 @@ export function toClock(time) {
  * @param {string} [fallbackTitle]
  */
 export function taskOf(source, raw, owner, fallbackTitle) {
-  const due = toDate(raw.due_date ?? raw.due ?? raw.dueDate ?? raw.completedAt ?? raw.startedAt);
+  const due = toDate(raw.due_date ?? raw.due ?? raw.dueDate ?? raw.date ?? raw.deadline ?? raw.completedAt ?? raw.startedAt);
   const title = String(raw.title ?? raw.name ?? raw.summary ?? fallbackTitle ?? '(untitled)').trim();
   const completed = Boolean(raw.completed ?? raw.done ?? raw.status === 'closed' ?? raw.finished ?? false);
   return {
