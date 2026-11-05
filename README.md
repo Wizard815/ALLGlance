@@ -154,6 +154,17 @@ curl http://localhost:8090/api/allglance/users
 The gateway reaches dayglance over MCP by service name
 (`DAYGLANCE_MCP_HOST=dayglance-mcp`), set in `docker-compose.yml`.
 
+**Building behind a TLS-intercepting proxy** (corporate proxy, CI sandbox): image
+builds fail verifying npm's certificate unless they trust the proxy's CA. Put the
+CA bundle at `docker/proxy-ca.crt` (gitignored) and add the override:
+
+```bash
+docker compose -f docker-compose.yml -f docker/compose.proxy-ca.yml --env-file .env.allglance up --build
+```
+
+The gateway image no longer bundles Chromium by default (the legacy browser
+reader is opt-in: `--build-arg INSTALL_BROWSER=true`).
+
 ### From source
 
 ```bash

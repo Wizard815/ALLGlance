@@ -14,7 +14,11 @@ WORKDIR /app
 
 # Install deps first for layer caching.
 COPY package.json ./
-RUN npm install --omit=dev --no-audit --no-fund
+# Optional extra CA for builds behind a TLS-intercepting proxy: pass it as the
+# build secret `extra_ca` (see docker/compose.proxy-ca.yml). Absent = no effect.
+RUN --mount=type=secret,id=extra_ca,required=false \
+    if [ -f /run/secrets/extra_ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/extra_ca; fi; \
+    npm install --omit=dev --no-audit --no-fund
 
 # The ported server + vendored model.
 COPY . .

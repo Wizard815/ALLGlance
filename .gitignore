@@ -89,3 +89,6 @@ allglance-data/
 /vault/
 /glance-vault/
 /dayglance-mcp/
+
+# Local proxy CA for docker/compose.proxy-ca.yml (never commit)
+docker/proxy-ca.crt

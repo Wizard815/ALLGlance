@@ -1,0 +1,19 @@
+# Override for building behind a TLS-intercepting proxy (corporate proxy, CI
+# sandboxes): hands the proxy's CA bundle to the image builds so npm/pnpm/
+# Playwright downloads verify. Not needed on a normal network.
+#
+#   docker compose -f docker-compose.yml -f docker/compose.proxy-ca.yml \
+#     --env-file .env.allglance build
+#
+# Put your proxy's CA bundle at docker/proxy-ca.crt (gitignored), or set EXTRA_CA_FILE
+# to a path inside this directory.
+services:
+  dayglance-mcp:
+    build:
+      secrets: [extra_ca]
+  allglance-gateway:
+    build:
+      secrets: [extra_ca]
+secrets:
+  extra_ca:
+    file: ${EXTRA_CA_FILE:-./docker/proxy-ca.crt}
