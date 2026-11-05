@@ -10,6 +10,17 @@ import Gateway from './gateway.js';
 import { createMcpRouter } from './mcp/server.js';
 import DayglanceMcpClient from './transport/DayglanceMcpClient.js';
 
+import { timingSafeEqual } from 'node:crypto';
+
+export function requireToken(token) {
+  const want = Buffer.from(token);
+  return (req, res, next) => {
+    const got = Buffer.from(String(req.headers.authorization ?? '').replace(/^Bearer\s+/i, ''));
+    if (got.length === want.length && timingSafeEqual(got, want)) return next();
+    res.status(401).json({ error: 'Send Authorization: Bearer <GATEWAY_TOKEN>.' });
+  };
+}
+
 function buildServer() {
   const gateway = new Gateway();
   const app = express();
@@ -39,6 +50,14 @@ function buildServer() {
   app.get('/health', async (_req, res) => {
     res.json(await gateway.health());
   });
+
+  // Optional bearer token for everything except /health. Without it anyone who
+  // can reach the port can read and create the family's tasks.
+  if (config.server.token) {
+    app.use(['/api/allglance', '/mcp'], requireToken(config.server.token));
+  } else {
+    console.warn('[gateway] GATEWAY_TOKEN is not set: /api/allglance and /mcp are open to anyone who can reach this port');
+  }
 
   // REST gateway routes.
   gateway.registerRoutes(app);

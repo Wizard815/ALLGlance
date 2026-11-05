@@ -13,7 +13,7 @@
 // ownership scoping stays in our hands rather than vikunja's opaque tool names.
 
 import { BaseAdapter } from './BaseAdapter.js';
-import { taskOf } from '../model.js';
+import { taskOf, toPriority } from '../model.js';
 import { fetchJson } from '../lib/fetch.js';
 
 export class VikunjaAdapter extends BaseAdapter {
@@ -133,6 +133,32 @@ export class VikunjaAdapter extends BaseAdapter {
     return taskOf('vikunja', { ...data, project_id: project }, null, data.title);
   }
 
+  /**
+   * Update a task: any of done, priority (0-5), title, due_date (YYYY-MM-DD or
+   * null to clear). Uses v2's PATCH (JSON merge patch); servers without it
+   * get GET + PUT, which replaces the whole task with the merged fields.
+   */
+  async updateTask(id, patch = {}) {
+    const taskId = Number(id);
+    if (!taskId) throw new Error('task id must be a number');
+    const body = {};
+    if (patch.done !== undefined) body.done = Boolean(patch.done);
+    if (patch.priority !== undefined) body.priority = toPriority(patch.priority);
+    if (patch.title !== undefined) body.title = String(patch.title);
+    if (patch.due_date !== undefined) body.due_date = patch.due_date ? (/^\d{4}-\d{2}-\d{2}$/.test(patch.due_date) ? `${patch.due_date}T00:00:00Z` : patch.due_date) : null;
+    if (!Object.keys(body).length) throw new Error('nothing to update');
+    const url = `${this.#baseUrl}/api/v2/tasks/${taskId}`;
+    let data;
+    try {
+      data = await fetchJson(url, { method: 'PATCH', headers: { ...this.#auth(), 'content-type': 'application/merge-patch+json' }, body, timeoutMs: 10000 });
+    } catch (err) {
+      if (!/-> (405|404|415) /.test(err.message)) throw err;
+      const current = await fetchJson(url, { headers: this.#auth(), timeoutMs: 10000 });
+      data = await fetchJson(url, { method: 'PUT', headers: this.#auth(), body: { ...current, ...body }, timeoutMs: 10000 });
+    }
+    return taskOf('vikunja', { ...(data ?? {}), id: data?.id ?? taskId }, null);
+  }
+
   /** Track vikunja user ids as we build tasks, for owner mapping. */
   #vikunjaUserId = new Map();
 
@@ -176,6 +202,25 @@ export class VikunjaAdapter extends BaseAdapter {
         },
         handler: async (args) => {
           const task = await this.writeTask(args);
+          return { content: [{ type: 'text', text: JSON.stringify({ source: 'vikunja', task }) }] };
+        },
+      },
+      {
+        name: 'vikunja_update_task',
+        description: 'Update a vikunja task: done, priority (0 none, 1 low, 2 medium, 3 high, 4 urgent, 5 do now), title or due_date.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            task_id: { type: 'integer' },
+            done: { type: 'boolean' },
+            priority: { type: 'integer', minimum: 0, maximum: 5 },
+            title: { type: 'string' },
+            due_date: { type: ['string', 'null'], description: 'YYYY-MM-DD, or null to clear' },
+          },
+          required: ['task_id'],
+        },
+        handler: async ({ task_id, ...patch }) => {
+          const task = await this.updateTask(task_id, patch);
           return { content: [{ type: 'text', text: JSON.stringify({ source: 'vikunja', task }) }] };
         },
       }
@@ -227,6 +272,16 @@ export class VikunjaAdapter extends BaseAdapter {
       }
     });
     routes.push('/vikunja/tasks');
+
+    router.patch('/vikunja/tasks/:id', async (req, res) => {
+      try {
+        const task = await this.updateTask(req.params.id, req.body ?? {});
+        res.json({ source: 'vikunja', task });
+      } catch (err) {
+        res.status(/must be a number|nothing to update/.test(err.message) ? 400 : 502).json({ source: 'vikunja', error: err.message });
+      }
+    });
+    routes.push('/vikunja/tasks/:id (PATCH)');
 
     return routes;
   }
