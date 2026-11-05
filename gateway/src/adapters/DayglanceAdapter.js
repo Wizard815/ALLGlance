@@ -74,14 +74,17 @@ export class DayglanceAdapter extends BaseAdapter {
    */
   #normalize(state = {}) {
     this.#syncRoster(state);
-    const ownerFor = (ids) => {
+    // dayGLANCE's own state uses assignedUserSyncIds[]; its MCP read model
+    // (get_day / list_unscheduled_tasks) reports a single assignee_id instead.
+    const ownerFor = (ids, single) => {
       const list = Array.isArray(ids) ? ids : [];
-      return list.length ? String(list[0]) : null;
+      if (list.length) return String(list[0]);
+      return single != null && single !== '' ? String(single) : null;
     };
     const tasks = [];
     const blocks = [];
     for (const t of state.tasks ?? []) {
-      const ownerId = ownerFor(t.assignedUserSyncIds ?? []);
+      const ownerId = ownerFor(t.assignedUserSyncIds, t.assignee_id);
       tasks.push(taskOf('dayglance', t, ownerId));
       blocks.push({ ...t, owner_id: ownerId });
     }
@@ -93,7 +96,7 @@ export class DayglanceAdapter extends BaseAdapter {
     for (const b of state.blocks ?? []) {
       if (seenBlocks.has(String(b.id))) continue; // already carried via tasks
       seenBlocks.add(String(b.id));
-      const ownerId = ownerFor(b.assignedUserSyncIds ?? []);
+      const ownerId = ownerFor(b.assignedUserSyncIds, b.assignee_id);
       blocks.push({ ...b, owner_id: ownerId });
       if (b.type === 'task') {
         const task = taskOf('dayglance', b, ownerId);
