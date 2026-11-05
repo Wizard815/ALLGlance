@@ -85,6 +85,24 @@ export class DayglanceAdapter extends BaseAdapter {
       tasks.push(taskOf('dayglance', t, ownerId));
       blocks.push({ ...t, owner_id: ownerId });
     }
+    // MCP transport: scheduled day items arrive as `blocks` (the inbox arrives
+    // as `tasks`). Carry them through, and surface scheduled task blocks as
+    // tasks, like the localStorage path does for every scheduled task.
+    const seen = new Set(tasks.map((t) => t.id));
+    const seenBlocks = new Set(blocks.map((b) => String(b.id)));
+    for (const b of state.blocks ?? []) {
+      if (seenBlocks.has(String(b.id))) continue; // already carried via tasks
+      seenBlocks.add(String(b.id));
+      const ownerId = ownerFor(b.assignedUserSyncIds ?? []);
+      blocks.push({ ...b, owner_id: ownerId });
+      if (b.type === 'task') {
+        const task = taskOf('dayglance', b, ownerId);
+        if (!seen.has(task.id)) {
+          seen.add(task.id);
+          tasks.push(task);
+        }
+      }
+    }
     return { tasks, blocks };
   }
 

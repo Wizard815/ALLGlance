@@ -73,7 +73,7 @@ export function taskOf(source, raw, owner, fallbackTitle) {
     project_id: raw.project_id ?? raw.project ?? null,
     all_day: Boolean(raw.all_day ?? raw.isAllDay ?? false),
     start_time: toClock(raw.start_time ?? raw.startTime),
-    duration_minutes: typeof raw.duration === 'number' ? raw.duration : null,
+    duration_minutes: typeof raw.duration === 'number' ? raw.duration : (typeof raw.duration_minutes === 'number' ? raw.duration_minutes : null),
     extra: { ...raw },
   };
 }

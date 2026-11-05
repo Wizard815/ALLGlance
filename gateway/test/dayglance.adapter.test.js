@@ -85,3 +85,21 @@ describe('dayglance adapter', () => {
     ok(roster.map((p) => p.name).includes('Dad'), 'roster should sync from localStorage users');
   });
 });
+
+describe('dayglance adapter (MCP day blocks)', () => {
+  it('scheduled day blocks from the MCP transport are surfaced, not dropped', async () => {
+    const a = new DayglanceAdapter({ roster: new Roster(), config: fakeConfig });
+    a.setTransport({
+      read: async () => ({
+        tasks: [{ id: 'inbox-1', title: 'Inbox thing' }],
+        blocks: [{ id: 'b1', type: 'task', title: 'Buy milk', date: '2026-11-06', start_time: '08:00', duration_minutes: 30 }],
+        users: [],
+      }),
+    }, 'mcp');
+    const { blocks } = await a.readBlocks('2026-11-06');
+    equal(blocks.map((b) => b.title).join(), 'Buy milk');
+    const { tasks } = await a.readTasks();
+    equal(tasks.map((t) => t.title).sort().join(), 'Buy milk,Inbox thing');
+    equal(tasks.find((t) => t.title === 'Buy milk').duration_minutes, 30);
+  });
+});
