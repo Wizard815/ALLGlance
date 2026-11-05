@@ -34,8 +34,10 @@ export function createAllglanceMcpServer(gateway, opts = {}) {
     registerTool: () => {},
   });
 
+  const dynamic = async () => (typeof gateway.dynamicMcpTools === 'function' ? gateway.dynamicMcpTools() : []);
+
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: tools.map((t) => ({
+    tools: [...tools, ...(await dynamic())].map((t) => ({
       name: t.name,
       description: t.description,
       inputSchema: t.inputSchema,
@@ -44,7 +46,7 @@ export function createAllglanceMcpServer(gateway, opts = {}) {
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name: toolName, arguments: args } = request.params;
-    const matched = tools.find((t) => t.name === toolName);
+    const matched = tools.find((t) => t.name === toolName) ?? (await dynamic()).find((t) => t.name === toolName);
     if (!matched) {
       return {
         content: [{ type: 'text', text: `Unknown tool: ${toolName}` }],

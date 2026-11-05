@@ -27,6 +27,13 @@ export const config = {
     token: env('VIKUNJA_TOKEN', ''),
     caldavUrl: env('VIKUNJA_CALDAV_URL', ''),
     enabled: enabled(env('ENABLE_VIKUNJA', 'true')),
+    // Vikunja's built-in MCP (Vikunja 2.7+, /api/v2/mcp). Its tools are exposed
+    // through the gateway as vikunja_native_*. The token needs the `mcp.access`
+    // permission; it defaults to VIKUNJA_TOKEN, so one token with that scope is enough.
+    mcp: {
+      enabled: enabled(env('ENABLE_VIKUNJA_MCP', 'true')),
+      token: env('VIKUNJA_MCP_TOKEN', ''),
+    },
   },
   dayglance: {
     // Host of dayGLANCE's MCP listener. In the container stack this is the
