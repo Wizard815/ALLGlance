@@ -118,6 +118,23 @@ export class Gateway {
     return { source, task: await target.updateTask(id, patch) };
   }
 
+  /**
+   * Tools that adapters discover at runtime (e.g. vikunja's native MCP tools).
+   * Never throws: a failing adapter simply contributes nothing.
+   */
+  async dynamicMcpTools() {
+    const out = [];
+    for (const adapter of this.adapters()) {
+      if (typeof adapter.dynamicTools !== 'function') continue;
+      try {
+        out.push(...(await adapter.dynamicTools()));
+      } catch {
+        // adapter's dynamic tools unavailable
+      }
+    }
+    return out;
+  }
+
   /** Fetch the family roster (dayGLANCE primary, vikunja secondary). */
   async refreshRoster() {
     const day = this.#adapters.get('dayglance');

@@ -84,6 +84,19 @@ from one place.
 
 Each adapter registers its own tools, so adding an app = adding an adapter.
 
+**Vikunja's native MCP (Vikunja 2.7+).** Vikunja ships its own MCP server
+(`/api/v2/mcp`, generated from its OpenAPI spec). The gateway discovers it and
+re-exposes its tools as `vikunja_native_*` (`tasks_list`, `tasks_create`,
+`tasks_update`, `projects_list`, `task_assignees_*`, `filter_syntax`, plus
+`find_action` / `do_action`, which reach every other Vikunja action your token
+allows). Use them for anything Vikunja-specific (filters, labels, buckets);
+use `allglance_*` / `vikunja_*` when you want owner scoping across apps. The
+native tools are Vikunja's own and are **not owner-scoped**. They need an API
+token with the `mcp.access` permission: create one token with `mcp.access` plus
+the project/task permissions you want and use it as `VIKUNJA_TOKEN` (or set
+`VIKUNJA_MCP_TOKEN` separately). Without it, or on Vikunja older than 2.7, they
+simply don't appear. Switch off with `ENABLE_VIKUNJA_MCP=false`.
+
 **`dayglance-mcp`** exposes dayGLANCE's full native tool set to the gateway:
 
 ```
@@ -261,11 +274,23 @@ created, scheduled and completed through MCP reached the app, including with
 encryption on; a lifeGLANCE milestone and lastGLANCE chore completions made in
 their UIs appeared in the gateway's `/milestones` and `/chores`.
 
-**App-to-app handoff (lastGLANCE chore -> dayGLANCE task).** The apps have
-their own upstream "intents" integration for this (lastGLANCE **Settings ->
-Integration**, dayGLANCE **Settings -> Integrations**). It uses the same WebDAV
-server and passphrase (folder `GLANCE/events`). That handoff is upstream
-behavior and has **not** been exercised in this stack.
+**App-to-app handoff: lastGLANCE chore -> dayGLANCE task (verified).** This uses
+the apps' own "intents" integration over the same WebDAV server; it is a second,
+separate setting from Cloud Sync in each app:
+
+| In | Setting | Value |
+|---|---|---|
+| lastGLANCE | Settings -> Integration (the plug) | WebDAV URL `http://<host>:8091` (or `http://dayglance-sync:6065` for the web build), the same user/password, folder `GLANCE/events`, enabled |
+| dayGLANCE | Settings -> Integrations (intents) | the same URL, user/password, events path `/GLANCE/events/` |
+
+Then a chore that is overdue (and has a cadence and some history) shows a "send
+to dayGLANCE" button, and can also auto-send once per day. Tested with the real
+apps: pressing it wrote an event file into `GLANCE/events/`; dayGLANCE polled it
+(every 2 minutes in the foreground, 15 in the background) and created the task
+(due today, all day), which then synced into the planner file and appeared in
+the gateway's `/tasks` and `/days/:date` and through the MCP. Verified with
+intents **unencrypted**; the apps also offer encrypted intents (same passphrase,
+a salt file in the events folder), which I have not exercised here.
 
 ## Using the data from other tools
 
@@ -344,8 +369,10 @@ After a bump, before merging, run the live checks for that component:
   the MCP, and confirm it reaches the app (the sync snapshot format is upstream-internal).
 - **lastglance / lifeglance**: sync the app, then check `/chores` or `/milestones`.
 
-Reference: the v2 API (OpenAPI-based, `/api/v2`) is Vikunja 2.4+ and its built-in
-MCP server (`/api/v2/mcp`) is 2.7+; `/api/v1` remains. Pins are deliberately exact.
+Reference: the gateway uses Vikunja's v2 API (OpenAPI-based, `/api/v2`), which
+needs Vikunja **2.4+**; its built-in MCP server (`/api/v2/mcp`) needs **2.7+**
+(optional: the gateway works without it); `/api/v1` remains upstream. Tested here
+on 2.7.1 and 2.8.0. Pins are deliberately exact.
 
 ## What's deferred (honest)
 

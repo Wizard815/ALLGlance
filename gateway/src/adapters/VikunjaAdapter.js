@@ -15,6 +15,10 @@
 import { BaseAdapter } from './BaseAdapter.js';
 import { taskOf, toPriority } from '../model.js';
 import { fetchJson } from '../lib/fetch.js';
+import McpHttpClient from '../transport/McpHttpClient.js';
+
+const NATIVE_PREFIX = 'vikunja_native_';
+const NATIVE_TTL_MS = 5 * 60 * 1000;
 
 export class VikunjaAdapter extends BaseAdapter {
   source = 'vikunja';
@@ -28,6 +32,49 @@ export class VikunjaAdapter extends BaseAdapter {
     this.enabled = opts.config.vikunja.enabled;
     this.#baseUrl = opts.config.vikunja.url.replace(/\/$/, '');
     this.#token = opts.config.vikunja.token;
+    const mcp = opts.config.vikunja.mcp ?? {};
+    this.#nativeEnabled = Boolean(mcp.enabled);
+    this.#native = new McpHttpClient({
+      url: `${this.#baseUrl}/api/v2/mcp`,
+      token: mcp.token || this.#token,
+      timeoutMs: 8000,
+    });
+  }
+
+  #native;
+  #nativeEnabled = false;
+  #nativeCache = { at: 0, tools: [] };
+  #nativeWarned = false;
+
+  /**
+   * Vikunja's own MCP tools (2.7+), discovered at runtime and re-exposed as
+   * `vikunja_native_<name>` so one MCP endpoint carries both the AllGLANCE tools
+   * (owner-scoped across apps) and everything Vikunja itself offers. The set is
+   * whatever the token is authorised for (Vikunja filters it), cached for a few
+   * minutes, and empty (never an error) if the server is old, off, or the token
+   * lacks mcp.access. Native tools are Vikunja's own: they are NOT owner-scoped.
+   */
+  async dynamicTools() {
+    if (!this.enabled || !this.#nativeEnabled) return [];
+    if (Date.now() - this.#nativeCache.at < NATIVE_TTL_MS) return this.#nativeCache.tools;
+    let tools = [];
+    try {
+      const listed = await this.#native.listTools();
+      tools = listed.map((t) => ({
+        name: `${NATIVE_PREFIX}${t.name}`,
+        description: `[Vikunja native] ${t.description ?? ''}`.trim(),
+        inputSchema: t.inputSchema ?? { type: 'object', properties: {} },
+        handler: async (args) => this.#native.callTool(t.name, args ?? {}),
+      }));
+      this.#nativeWarned = false;
+    } catch (err) {
+      if (!this.#nativeWarned) {
+        console.warn(`[vikunja] native MCP tools unavailable: ${err.message}`);
+        this.#nativeWarned = true;
+      }
+    }
+    this.#nativeCache = { at: Date.now(), tools };
+    return tools;
   }
 
   #auth() {
@@ -44,7 +91,8 @@ export class VikunjaAdapter extends BaseAdapter {
           timeoutMs: 5000,
         });
       }
-      return { ok: true, authenticated: !!this.#token, label: this.label };
+      const native = this.#nativeEnabled ? (await this.dynamicTools()).length : null;
+      return { ok: true, authenticated: !!this.#token, label: this.label, nativeMcpTools: native };
     } catch (err) {
       return { ok: false, error: err.message, label: this.label };
     }
