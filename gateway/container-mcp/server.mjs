@@ -24,7 +24,9 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { z } from 'zod';
 import { handleMcpRequest } from './model/mcpReadModel.js';
 import { handleMcpWrite } from './model/mcpWriteModel.js';
+import { randomUUID } from 'node:crypto';
 import { createStateStore } from './state.mjs';
+import { createSyncFileStore } from './syncFileStore.mjs';
 import { checkBearerToken, unauthorizedResponse } from './auth.mjs';
 import { resolveMcpPort } from './port.mjs';
 import { isValidLocalDate } from './dates.mjs';
@@ -154,7 +156,11 @@ function buildServer(store, deps) {
   }, async (args) => {
     const planned = planCreateTask(args, deps.timeZone());
     if (!planned.ok) return err(planned.code, planned.message);
-    return write('create_task', { ...planned.plan, nowIso: new Date().toISOString() });
+    // As in the Electron tool (mcpWriteTools.ts): the caller mints the task id
+    // (random UUID when there is no idempotency key) — the model leaves id unset
+    // otherwise, producing id-less tasks that cannot be updated or synced.
+    const transitionId = randomUUID();
+    return write('create_task', { taskId: randomUUID(), ...planned.plan, transitionId, nowIso: new Date().toISOString() });
   });
 
   server.registerTool('dayglance_update_task', {
@@ -232,10 +238,16 @@ export function startDayglanceMcpServer(opts = {}) {
   const resolved = resolveMcpPort(opts.port ?? process.env.DAYGLANCE_MCP_PORT);
   if (!resolved.ok) { logError(`[dayGLANCE MCP] not started: ${resolved.reason}`); return null; }
 
-  const store = opts.store ?? createStateStore({
-    file: process.env.DAYGLANCE_STATE_FILE || '/data/dayglance-state.json',
-    vault: opts.vault,
-  });
+  // Preferred: read/write dayGLANCE's own WebDAV sync snapshot (kept current by
+  // the app itself). Fallback: a standalone JSON state document.
+  const syncFile = opts.syncFile ?? process.env.DAYGLANCE_SYNC_FILE;
+  const store = opts.store ?? (syncFile
+    ? createSyncFileStore({ file: syncFile })
+    : createStateStore({
+        file: process.env.DAYGLANCE_STATE_FILE || '/data/dayglance-state.json',
+        vault: opts.vault,
+      }));
+  if (syncFile) log(`[dayGLANCE MCP] state source: sync snapshot ${syncFile}`);
 
   const deps = {
     timeZone: () => opts.timeZone ?? process.env.TZ ?? Intl.DateTimeFormat().resolvedOptions().timeZone ?? 'UTC',
