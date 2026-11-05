@@ -25,6 +25,16 @@
 import { parseRoutineBlockId, routineBlockId } from './mcpRoutines.js';
 import { findRoutineConflict, minutesToTime } from './dayOccupancy.js';
 import { completionTimestamp } from './taskUtils.js';
+import { createdTimestamp } from './createdAt.js';
+
+// `createdAt` for a task a write creates: the write's own clock, in the
+// local-offset form every createdAt uses.
+const createdStamp = (nowIso) => createdTimestamp(nowIso ? new Date(nowIso) : new Date());
+// A recurring occurrence's per-date stamp: the write's own instant (nowIso,
+// as lastModified), in the own-offset form an ordinary completedAt uses, so
+// it names the local date the occurrence was done on (JOBO's Do date) and
+// can close a Focus session. The sync merge compares stamps as instants.
+const offsetStampAt = (nowIso) => completionTimestamp(Number.isFinite(Date.parse(nowIso)) ? new Date(nowIso) : new Date());
 import { getProjectColor } from './colorUtils.js';
 import { getOccurrencesInRange } from './recurrenceEngine.js';
 import { applyRecurringInstanceEdit } from './recurringInstanceEdit.js';
@@ -244,6 +254,9 @@ export function applyCreateTask(state, {
     ...(projectId ? { projectId } : {}),
     ...(assignedUserSyncIds ? { assignedUserSyncIds } : {}),
     ...(transitionId ? { transitionId } : {}),
+    // Stamped here as well as by the persist pass (utils/createdAt.js), so the
+    // write's own response already says when the task was created.
+    createdAt: createdStamp(nowIso),
     lastModified: nowIso,
   };
 
@@ -326,6 +339,7 @@ function createRecurringSeries(state, {
     exceptions: {},
     ...(projectId ? { projectId } : {}),
     ...(users ? { assignedUserSyncIds: users } : {}),
+    createdAt: createdStamp(nowIso),
     lastModified: nowIso,
   };
 
@@ -984,7 +998,7 @@ export function applyUndoOps(state, ops, { nowIso }) {
           completedDates: op.wasCompleted
             ? [...(template.completedDates || []), op.dateStr]
             : (template.completedDates || []).filter((d) => d !== op.dateStr),
-          completedDatesTimestamps: { ...(template.completedDatesTimestamps || {}), [op.dateStr]: nowIso },
+          completedDatesTimestamps: { ...(template.completedDatesTimestamps || {}), [op.dateStr]: offsetStampAt(nowIso) },
           lastModified: nowIso,
         };
         recurring = recurring.map((t) => (t.id === op.templateId ? nextTemplate : t));
@@ -1046,7 +1060,7 @@ export function applySetCompletion(state, { taskId, completed, transitionId, now
       completedDates: completed
         ? [...(template.completedDates || []), instance.dateStr]
         : (template.completedDates || []).filter((d) => d !== instance.dateStr),
-      completedDatesTimestamps: { ...(template.completedDatesTimestamps || {}), [instance.dateStr]: nowIso },
+      completedDatesTimestamps: { ...(template.completedDatesTimestamps || {}), [instance.dateStr]: offsetStampAt(nowIso) },
       lastModified: nowIso,
     };
     return {

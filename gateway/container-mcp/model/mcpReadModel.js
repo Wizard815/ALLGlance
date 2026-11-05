@@ -22,6 +22,7 @@ import { buildRoutineBlocks } from './mcpRoutines.js';
 import { buildFrames } from './mcpFrames.js';
 import { noteLinkOf } from './obsidianProjectNotes.js';
 import { recurrenceToWire } from './mcpRepeat.js';
+import { wireStamp } from './taskMetadata.js';
 
 /**
  * Subtasks on the wire (2026-10-04): the task's own checklist, in order,
@@ -51,6 +52,10 @@ export function inboxItem(t) {
     priority: typeof t.priority === 'number' ? t.priority : 0,
     completed: !!t.completed,
   };
+  // When it was created and completed (#2135), null when not known: tasks
+  // from before createdAt existed have none, and an open task no completion.
+  item.created_at = wireStamp(t.createdAt);
+  item.completed_at = t.completed ? wireStamp(t.completedAt) : null;
   if (t.deadline) item.deadline = t.deadline;
   if (t.projectId) item.project_id = t.projectId;
   if (t.notes) item.notes = t.notes;
@@ -134,6 +139,12 @@ export function toBlock(task) {
     completed: !!task.completed,
   };
   if (task.projectId) block.project_id = task.projectId;
+  // When a task was created and completed (#2135), as on inbox items. Not on
+  // events or routines: they are not tasks dayGLANCE created or completes.
+  if (type === 'task' || type === 'recurring_task') {
+    block.created_at = wireStamp(task.createdAt);
+    block.completed_at = task.completed ? wireStamp(task.completedAt) : null;
+  }
   // Notes and subtasks ride the block too (2026-10-04): the inbox shape has
   // carried notes since Phase 2, and a scheduled task's notes are no less
   // the task's. Neither is a device event's.
@@ -179,6 +190,10 @@ export function expandRecurringForDate(recurringTasks, date) {
         startTime: exception?.startTime ?? template.startTime,
         duration: exception?.duration ?? template.duration,
         completed: (template.completedDates || []).includes(dateStr),
+        // The series' creation, and this date's completion, which the
+        // template keeps per date (#2135).
+        createdAt: template.createdAt,
+        completedAt: template.completedDatesTimestamps?.[dateStr],
         isAllDay: exception?.isAllDay ?? template.isAllDay ?? false,
         assignedUserSyncIds: exception?.assignedUserSyncIds ?? template.assignedUserSyncIds,
         // Series-level, like assignment: the template owns it and every
@@ -319,6 +334,9 @@ export function projectItem(p, progressTasks = []) {
   };
   if (p.goalId) item.goal_id = p.goalId;
   if (p.assignedUserSyncIds?.length) item.assignee_ids = [...p.assignedUserSyncIds];
+  // The project's own target date (2026-10-21), the same field a goal carries
+  // as target_date; omitted when unset so unchanged consumers see no new key.
+  if (p.targetDate) item.target_date = p.targetDate;
   const note = wireNote(p);
   if (note) item.obsidian_note = note;
   return item;

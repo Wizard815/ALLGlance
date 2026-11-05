@@ -76,6 +76,21 @@ export function noteLinkFromTitle(title) {
  * backlinks pane becomes the record of everything completed toward it; the
  * bare title otherwise (unlinked, or the note is missing).
  */
+/**
+ * The fields a `project_note_create` intent carries for an EXISTING project
+ * or goal (owner, 2026-10-19): the same three the new-entity path sends, read
+ * from the record. The plugin needs no list either way; it creates by title,
+ * nests a project under its goal's note when the layout says so, and the
+ * description rides into the note's description slot (the 2026-10-03 ruling).
+ */
+export function noteCreateFields(kind, entity) {
+  return {
+    title: String(entity?.title ?? ''),
+    goalId: kind === 'project' && entity?.goalId ? String(entity.goalId) : null,
+    description: typeof entity?.description === 'string' ? entity.description : '',
+  };
+}
+
 export function projectLogName(project) {
   return projectRefFor(project);
 }

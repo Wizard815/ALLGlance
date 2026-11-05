@@ -71,7 +71,7 @@ services:
   vikunja:
     # Pinned to the release the services/vikunja submodule is pinned to.
     # Bump the image tag and the submodule together.
-    image: ghcr.io/go-vikunja/vikunja:${VIKUNJA_IMAGE_TAG:-2.7.1}
+    image: ghcr.io/go-vikunja/vikunja:${VIKUNJA_IMAGE_TAG:-2.8.0}
     container_name: allglance-vikunja
     restart: unless-stopped
     ports:
@@ -101,7 +101,7 @@ services:
 
   # --- dayglance web build ---
   dayglance:
-    image: ghcr.io/krelltunez/dayglance:${DAYGLANCE_IMAGE_TAG:-5.9.0}
+    image: ghcr.io/krelltunez/dayglance:${DAYGLANCE_IMAGE_TAG:-5.11.0}
     container_name: allglance-dayglance
     restart: unless-stopped
     ports:
@@ -174,7 +174,7 @@ services:
 
   # --- lastglance ---
   lastglance:
-    image: ghcr.io/krelltunez/lastglance:${LASTGLANCE_IMAGE_TAG:-2.9.0}
+    image: ghcr.io/krelltunez/lastglance:${LASTGLANCE_IMAGE_TAG:-2.14.0}
     container_name: allglance-lastglance
     restart: unless-stopped
     ports:

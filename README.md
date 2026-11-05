@@ -309,6 +309,30 @@ the submodule to the new tag, bump the matching image tag, and (dayglance only)
 re-run `node gateway/container-mcp/scripts/vendor-model.mjs`. AllGLANCE's own
 work lives under `gateway/`.
 
+## Upkeep
+
+Nothing is forked, so upkeep is: move the pins, re-vendor, re-test.
+
+```bash
+scripts/upstream.sh status        # pinned vs latest release, and drift between pin / compose / .env.example
+scripts/upstream.sh bump vikunja  # or dayglance | lastglance | lifeglance  [vX.Y.Z]
+scripts/upstream.sh verify        # CI runs this: pin = compose tag = .env.example
+```
+
+`bump` checks the ghcr image exists, moves the submodule to the tag, updates the
+compose default and `.env.example`, re-vendors the dayGLANCE model when that is
+the component, and runs both test suites. A weekly workflow
+(`upstream-watch.yml`) keeps one open issue listing whatever is behind.
+
+After a bump, before merging, run the live checks for that component:
+- **vikunja**: create and read back a task through the gateway; `/health` shows vikunja ok.
+- **dayglance**: let the app sync, then read the day through the MCP, write through
+  the MCP, and confirm it reaches the app (the sync snapshot format is upstream-internal).
+- **lastglance / lifeglance**: sync the app, then check `/chores` or `/milestones`.
+
+Reference: the v2 API (OpenAPI-based, `/api/v2`) is Vikunja 2.4+ and its built-in
+MCP server (`/api/v2/mcp`) is 2.7+; `/api/v1` remains. Pins are deliberately exact.
+
 ## What's deferred (honest)
 
 - `gateway/container-mcp/model/` is **vendored** from
