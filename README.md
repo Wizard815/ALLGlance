@@ -62,7 +62,7 @@ from one place.
 | `dayglance-mcp` | `7893` (internal) | Container port of dayGLANCE's MCP; the gateway's dayGLANCE source |
 | `vikunja` | `3457` | Task/calendar manager (web UI, CalDAV, REST `/api/v2/`) |
 | `dayglance-sync` | `8091` | WebDAV server dayGLANCE syncs to; `dayglance-mcp` reads/writes the same file |
-| `glance-vault` | `8088` | Optional zero-knowledge sync backend for the browser apps |
+| `glance-vault` | `8088` | **Optional, off by default** (`--profile vault`): zero-knowledge sync backend for the browser apps; nothing here needs it |
 | `dayglance` | `6767` | dayGLANCE web build |
 | `lastglance` | `3000` | lastGLANCE web build (chores) |
 | `lifeglance` | `6868` | lifeGLANCE web build (milestones) |
@@ -301,8 +301,15 @@ apps: pressing it wrote an event file into `GLANCE/events/`; dayGLANCE polled it
 (every 2 minutes in the foreground, 15 in the background) and created the task
 (due today, all day), which then synced into the planner file and appeared in
 the gateway's `/tasks` and `/days/:date` and through the MCP. Verified with
-intents **unencrypted**; the apps also offer encrypted intents (same passphrase,
-a salt file in the events folder), which I have not exercised here.
+intents both **unencrypted and encrypted** (same passphrase; the first app to
+enable it creates `intents-encryption-salt.json` in the events folder and the
+other derives its key from it; the chore title is not readable on the server).
+The **return path** also works: ticking the task in dayGLANCE logs the chore as
+done in lastGLANCE. That needed a workaround: dayGLANCE 5.11 names completion
+events `<uuid>.json`, which the shared intents library (and so lastGLANCE)
+ignores, so `dayglance-mcp` renames such files in the events folder to the
+timestamped form (`DAYGLANCE_EVENTS_ROOT`, see `eventNormalizer.mjs`). Remove it
+once upstream fixes `useNotifyEmitter.js`.
 
 ## Using the data from other tools
 
@@ -320,6 +327,15 @@ Verified against a live Vikunja v2.7.1:
   `/user/export/request` endpoint; CSV and other import via `/migration/*`.
 - dayGLANCE tasks are not in CalDAV by themselves; they reach the gateway through
   `dayglance-mcp`.
+
+### Home Assistant (verified)
+
+Home Assistant's built-in **CalDAV** integration, pointed at
+`http://<host>:3457/dav/` with the Vikunja login, creates one to-do list per
+Vikunja project. Tested with a real Home Assistant: it lists the tasks; an item
+added or completed in Home Assistant appears in the gateway; a task created
+through the agent appears in Home Assistant (after its next poll). Priorities are
+not shown in Home Assistant's to-do UI.
 
 ## Unraid / appdata layout
 
