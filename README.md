@@ -61,6 +61,7 @@ from one place.
 | `allglance-gateway` | `8090` | The one MCP (`/mcp`) + REST (`/api/allglance/`) front door |
 | `dayglance-mcp` | `7893` (internal) | Container port of dayGLANCE's MCP; the gateway's dayGLANCE source |
 | `vikunja` | `3457` | Task/calendar manager (web UI, CalDAV, REST `/api/v2/`) |
+| `dayglance-sync` | `8091` | WebDAV server dayGLANCE syncs to; `dayglance-mcp` reads/writes the same file |
 | `glance-vault` | `8088` | Optional zero-knowledge sync backend for the browser apps |
 | `dayglance` | `6767` | dayGLANCE web build |
 | `lastglance` | `3000` | lastGLANCE web build (chores) |
@@ -174,15 +175,45 @@ DAYGLANCE_MCP_TOKEN=secret DAYGLANCE_STATE_FILE=/data/dayglance-state.json node 
 | lastGLANCE | intents / localStorage adapter | Chore data natively flows as encrypted intents. |
 | lifeGLANCE | localStorage adapter | Milestones, no ownership model. |
 
-- **`dayglance-mcp` state:** it serves a JSON state document on a mounted volume
-  (`/data/dayglance-state.json`). To populate it with real data you either seed
-  the file, let dayGLANCE sync to vikunja over CalDAV (the gateway then reads
-  vikunja), or hydrate it from GLANCEvault once you have the sync passphrase. It
-  starts empty by design — a read returns an empty day, never a fabricated one.
+- **`dayglance-mcp` state (automatic):** the stack runs `dayglance-sync`, a
+  WebDAV server for dayGLANCE's built-in Cloud Sync. dayGLANCE syncs its whole
+  planner to `dayglance-sync.json` there, and `dayglance-mcp` reads *and writes*
+  that same file. So the gateway sees live app data, and tasks created or
+  changed through MCP flow back into the app on its next sync. See
+  [Connecting dayGLANCE](#connecting-dayglance-one-time-per-device).
+  If `DAYGLANCE_SYNC_FILE` is unset, the MCP falls back to a standalone JSON
+  state document that starts empty (a read returns an empty day, never a
+  fabricated one).
 - **Writes:** the gateway writes through each app's own transport (vikunja REST,
-  dayGLANCE MCP). It does not write into the browser apps' localStorage.
+  dayGLANCE MCP -> the sync file -> the app). It does not write into the browser
+  apps' localStorage.
 - **GLANCEvault** is optional for the gateway; enable it only for multi-device
   sync + cross-app intents.
+
+## Connecting dayGLANCE (one time per device)
+
+In each dayGLANCE (web, desktop, mobile): **Settings -> Sync -> WebDAV Sync**
+on, then:
+
+| Field | Value |
+|---|---|
+| Provider | Generic WebDAV |
+| URL | `http://<host>:8091` (web build inside this stack: `http://dayglance-sync:6065`) |
+| Username / password | `DAYGLANCE_SYNC_USER` / `DAYGLANCE_SYNC_PASSWORD` from `.env.allglance` |
+| Sync folder | `dayglance` (must match `DAYGLANCE_SYNC_FOLDER`) |
+
+Keep **end-to-end encryption off**: the MCP has to read the snapshot (if it is
+encrypted the MCP reports a clear error and never overwrites it). A device's
+first sync asks how to combine local and server data ("Merge both" is the safe
+choice). After that the app syncs automatically (on open, on change, and on a
+poll) and `dayglance-mcp` always reads the current file. Use `https://` if the
+sync server is reachable beyond your LAN.
+
+Verified end to end with a real dayGLANCE: a task created in the app reached
+`dayglance-mcp` without any manual step; tasks created, scheduled and completed
+through MCP arrived in the app; an inbox task scheduled via MCP moved to the
+calendar without a duplicate; and a completion made through MCP survived the
+app's next sync.
 
 ## Using the data from other tools
 
@@ -207,7 +238,8 @@ Verified against a live Vikunja v2.7.1:
 /mnt/user/appdata/allglance-data/      # ALLGLANCE_DATA; kept outside the git checkout
 ├── vikunja/{db,files,logs}
 ├── gateway         # roster cache
-├── dayglance-mcp   # dayglance-state.json (owned 99:100)
+├── dayglance-sync  # dayglance/dayglance-sync.json (owned 99:100)
+├── dayglance-mcp   # dayglance-state.json fallback (owned 99:100)
 └── glance-vault    # glancevault.db (owned 99:100)
 ```
 

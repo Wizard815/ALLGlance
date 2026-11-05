@@ -5,7 +5,10 @@
 //   DAYGLANCE_MCP_PORT    port to bind (default 7893)
 //   DAYGLANCE_MCP_TOKEN   bearer token required on every request (recommended;
 //                         empty = open, which is only safe on a private net)
-//   DAYGLANCE_STATE_FILE  path to the JSON state document (default
+//   DAYGLANCE_SYNC_FILE   path to dayGLANCE's WebDAV sync snapshot
+//                         (dayglance-sync.json). When set, the MCP reads and
+//                         writes the app's live data through it.
+//   DAYGLANCE_STATE_FILE  (fallback) path to the JSON state document (default
 //                         /data/dayglance-state.json)
 //   TZ                    IANA timezone used to resolve "today" (default: host)
 

@@ -109,9 +109,34 @@ services:
     # dayglance's roster lives in the browser localStorage (App.jsx users[] +
     # meUserSyncId). The web build has NO MCP — the gateway reads dayglance via
     # the dayglance-mcp service below (same data volume).
+    # (dayGLANCE reads no environment configuration. To show vikunja tasks in it,
+    # set Settings -> Integrations -> Task Calendar URL to
+    # http://vikunja:3456/dav/projects/<id> with your vikunja user + password;
+    # its built-in proxy reaches vikunja by service name.)
+
+  # --- dayglance-sync: WebDAV server for dayGLANCE's built-in cloud sync ---
+  # In every dayGLANCE (web, desktop, mobile) set Settings -> Sync -> WebDAV Sync:
+  #   Provider "Generic WebDAV", URL http://<this-host>:8091  (or, for the web
+  #   build in this stack, http://dayglance-sync:6065, which its built-in proxy
+  #   reaches by service name), the user/password below, Sync folder "dayglance".
+  # The app then syncs its whole planner to dayglance-sync.json here, and
+  # dayglance-mcp reads and writes that same file, so the gateway sees live app
+  # data and changes made through MCP flow back into the app automatically.
+  # Leave end-to-end encryption OFF in the app: the MCP needs a readable file.
+  dayglance-sync:
+    image: ghcr.io/hacdias/webdav:v5.17.3
+    container_name: allglance-dayglance-sync
+    restart: unless-stopped
+    user: "99:100"                 # same owner as dayglance-mcp; both write this dir
+    command: ["--config", "/config.yml"]
+    ports:
+      - "8091:6065"
     environment:
-      # Optional: preseed CalDAV so dayglance syncs tasks to/from vikunja.
-      - VIKUNJA_CALDAV_URL=http://vikunja:3456/dav/calendars/admin/
+      - DAYGLANCE_SYNC_USER=${DAYGLANCE_SYNC_USER:-glance}
+      - DAYGLANCE_SYNC_PASSWORD=${DAYGLANCE_SYNC_PASSWORD:?set DAYGLANCE_SYNC_PASSWORD in .env.allglance}
+    volumes:
+      - ./docker/webdav/config.yml:/config.yml:ro
+      - ${ALLGLANCE_DATA:-/mnt/user/appdata/allglance-data}/dayglance-sync:/data
 
   # --- dayglance MCP (container port of the Electron MCP) ---
   # dayglance's own image ships no MCP (Electron-only in the desktop app), so
@@ -132,11 +157,16 @@ services:
       - DAYGLANCE_MCP_PORT=7893
       - DAYGLANCE_MCP_TOKEN=${DAYGLANCE_MCP_TOKEN:-}
       - DAYGLANCE_STATE_FILE=/data/dayglance-state.json
+      # Preferred state source: the app's own sync snapshot on the dayglance-sync
+      # volume (folder = the "Sync folder" set in dayGLANCE). Falls back to the
+      # JSON state file above only if this is unset.
+      - DAYGLANCE_SYNC_FILE=/sync/${DAYGLANCE_SYNC_FOLDER:-dayglance}/dayglance-sync.json
       - TZ=${TZ:-UTC}
     volumes:
       # Shared state document; also imported by the gateway so it can seed /
       # read it. Owned by 99:100 on Unraid.
       - ${ALLGLANCE_DATA:-/mnt/user/appdata/allglance-data}/dayglance-mcp:/data
+      - ${ALLGLANCE_DATA:-/mnt/user/appdata/allglance-data}/dayglance-sync:/sync
 
   # --- lastglance ---
   lastglance:
