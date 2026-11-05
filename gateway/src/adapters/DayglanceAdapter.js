@@ -178,6 +178,68 @@ export class DayglanceAdapter extends BaseAdapter {
     return this.#normalize(this.#fromLocalStorage(await this.#reader.read()));
   }
 
+  #call(name, args) {
+    if (!this.#transport || typeof this.#transport.call !== 'function') {
+      throw new Error('dayGLANCE writes need its MCP transport (dayglance-mcp is not reachable)');
+    }
+    return this.#transport.call(name, args);
+  }
+
+  /**
+   * Create a dayGLANCE task through its MCP. With `start` ("YYYY-MM-DD HH:MM", or
+   * "YYYY-MM-DD" with all_day) it is placed on the calendar; without, it lands in
+   * the inbox (optionally with a due_date as its deadline). dayGLANCE priority is
+   * 0-3, so higher values are capped.
+   */
+  async writeTask({ title, start, due_date, duration_minutes, all_day, priority, notes } = {}) {
+    const args = { title };
+    if (notes) args.notes = notes;
+    // dayGLANCE keeps priority and deadline on INBOX tasks only; a scheduled task
+    // (with start) that carries them is rejected, so they are left off then.
+    if (priority !== undefined && !start) args.priority = Math.max(0, Math.min(3, Math.round(Number(priority) || 0)));
+    if (start) {
+      args.start = start;
+      if (duration_minutes) args.duration_minutes = duration_minutes;
+      if (all_day) args.all_day = true;
+    } else if (due_date) {
+      args.deadline = due_date;
+    }
+    const res = await this.#call('dayglance_create_task', args);
+    const raw = res.task ?? res.block ?? res;
+    return taskOf('dayglance', raw, null, title);
+  }
+
+  /**
+   * Update a dayGLANCE task: done, title, priority, notes, due_date (inbox
+   * deadline; null clears it) and/or start (move it onto the calendar).
+   */
+  async updateTask(id, patch = {}) {
+    const taskId = String(id);
+    let last = null;
+    const edit = {};
+    if (patch.title !== undefined) edit.title = String(patch.title);
+    if (patch.notes !== undefined) edit.notes = String(patch.notes);
+    if (patch.priority !== undefined) edit.priority = Math.max(0, Math.min(3, Math.round(Number(patch.priority) || 0)));
+    if (patch.due_date !== undefined) {
+      if (patch.due_date) edit.deadline = patch.due_date;
+      else edit.clear_fields = ['deadline'];
+    }
+    if (Object.keys(edit).length) last = await this.#call('dayglance_update_task', { task_id: taskId, ...edit });
+    if (patch.start) {
+      last = await this.#call('dayglance_schedule_task', {
+        task_id: taskId,
+        start: patch.start,
+        ...(patch.duration_minutes ? { duration_minutes: patch.duration_minutes } : {}),
+      });
+    }
+    if (patch.done !== undefined) {
+      last = await this.#call('dayglance_set_task_completion', { task_id: taskId, completed: Boolean(patch.done) });
+    }
+    if (!last) throw new Error('nothing to update');
+    const raw = last.task ?? last.block ?? last;
+    return taskOf('dayglance', { id: taskId, ...raw }, null);
+  }
+
   async readTasks(owner = null) {
     const { tasks } = await this.#read('today');
     return { tasks: owner ? tasks.filter((t) => t.owner_id === owner) : tasks };

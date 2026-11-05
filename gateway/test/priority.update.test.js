@@ -62,8 +62,13 @@ test('PATCH /api/allglance/tasks/:source/:id routes to the source', async () => 
   assert.ok(routes.some((r) => r.path === '/api/allglance/vikunja/tasks'), 'adapter routes mounted under the base path');
   const call = async (source) => { let status = 200, payload; const res = { json: (d) => { payload = d; }, status: (c) => { status = c; return res; } };
     await route.handler({ params: { source, id: '9' }, body: { priority: 5 } }, res); return { status, payload }; };
+  // dayGLANCE is writable through its MCP; with no MCP transport wired it must
+  // say so (502), not pretend. lastGLANCE / lifeGLANCE data is read-only here.
   const day = await call('dayglance');
-  assert.ok([501, 404].includes(day.status), `dayglance answered ${day.status}`);
+  assert.equal(day.status, 502);
+  assert.match(day.payload.error, /MCP transport/);
+  const ro = await call('lastglance');
+  assert.ok([501, 404].includes(ro.status), `lastglance answered ${ro.status}`);
   const nope = await call('nope');
   assert.equal(nope.status, 404);
 });

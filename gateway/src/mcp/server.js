@@ -70,36 +70,38 @@ export function createAllglanceMcpServer(gateway, opts = {}) {
  * Serve the MCP server over Streamable HTTP (the transport the MCP spec uses,
  * and what vikunja's native MCP exposes). Returns an Express router that the
  * gateway can mount.
+ *
+ * STATELESS: a fresh server + transport per request. The tools hold no
+ * per-client state, and a single shared stateful transport accepts exactly one
+ * `initialize` for the life of the process, so every later client (any agent
+ * reconnecting) was refused until the container restarted.
  */
 export function createMcpRouter(gateway) {
-  const { server } = createAllglanceMcpServer(gateway);
   const router = express.Router();
-  let transport = null;
-
   router.use(express.json());
 
   router.post('/mcp', async (req, res) => {
     try {
-      if (!transport) {
-        transport = new StreamableHTTPServerTransport({
-          sessionIdGenerator: () => `allglance-${Date.now()}`,
-        });
-        await server.connect(transport);
-      }
+      const { server } = createAllglanceMcpServer(gateway);
+      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+      res.on('close', () => {
+        transport.close().catch(() => {});
+        server.close().catch(() => {});
+      });
+      await server.connect(transport);
       await transport.handleRequest(req, res, req.body);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      if (!res.headersSent) {
+        res.status(500).json({ jsonrpc: '2.0', error: { code: -32603, message: err.message }, id: null });
+      }
     }
   });
 
-  router.get('/mcp', async (req, res) => {
-    if (transport) await transport.handleRequest(req, res);
-    else res.status(405).json({ error: 'No active MCP session' });
-  });
-
-  router.delete('/mcp', async (req, res) => {
-    if (transport) await transport.handleRequest(req, res);
-  });
+  // Stateless: there is no session to stream to or to end.
+  const notSupported = (_req, res) =>
+    res.status(405).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Method not allowed: this MCP endpoint is stateless, POST only' }, id: null });
+  router.get('/mcp', notSupported);
+  router.delete('/mcp', notSupported);
 
   return router;
 }

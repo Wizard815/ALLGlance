@@ -121,6 +121,25 @@ export class DayglanceMcpClient {
     }
   }
 
+  /**
+   * Call any dayGLANCE MCP tool (the write tools: dayglance_create_task,
+   * dayglance_update_task, dayglance_schedule_task, dayglance_set_task_completion,
+   * …). Throws with the tool's own error message when the tool reports one.
+   */
+  async call(name, args = {}) {
+    await this.#ensureSession();
+    const res = await this.#request('tools/call', { name, arguments: args });
+    const result = res?.result ?? {};
+    const text = result.content?.[0]?.text;
+    if (result.isError) {
+      let msg = text ?? `dayGLANCE ${name} failed`;
+      try { msg = JSON.parse(text)?.error?.message ?? msg; } catch { /* plain text */ }
+      throw new Error(msg);
+    }
+    if (result.structuredContent) return result.structuredContent;
+    try { return JSON.parse(text); } catch { return result; }
+  }
+
   /** Initialize the MCP session (handshake) so tools/call carries a session id. */
   async #ensureSession() {
     if (this.sessionId) return;
