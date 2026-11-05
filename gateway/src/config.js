@@ -73,6 +73,9 @@ export const config = {
   sync: {
     dir: env('GLANCE_SYNC_DIR', ''),
     passphrase: env('GLANCE_SYNC_PASSPHRASE', ''),
+    // Exact path of dayGLANCE's snapshot (same value the dayglance-mcp service uses).
+    // Optional: without it the file is searched for under `dir`.
+    dayglanceFile: env('DAYGLANCE_SYNC_FILE', ''),
   },
   playwright: {
     // Launch the browser once and reuse it; GC between runs for cleanliness.

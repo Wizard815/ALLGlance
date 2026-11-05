@@ -204,3 +204,27 @@ describe('error wording', () => {
     equal(explain(other, 'vikunja'), other, 'domain errors pass through untouched');
   });
 });
+
+describe('dayGLANCE reads cover every scheduled day', () => {
+  it('list_tasks sees tasks scheduled weeks ahead (the MCP alone only reads one day at a time)', async () => {
+    const { mkdtemp, mkdir, writeFile } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = await mkdtemp(join(tmpdir(), 'dgsnap-'));
+    await mkdir(join(dir, 'dayglance'));
+    const file = join(dir, 'dayglance', 'dayglance-sync.json');
+    await writeFile(file, JSON.stringify({ schemaVersion: 1, appId: 'dayglance', version: 2, data: {
+      tasks: [{ id: 'a', title: 'Dentist', date: '2026-12-24', startTime: '10:00', duration: 45, completed: false }],
+      unscheduledTasks: [{ id: 'b', title: 'Call plumber', priority: 2, completed: false }],
+      users: [],
+    } }));
+    const adapter = new DayglanceAdapter({ roster: new Roster(), config: { dayglance: { enabled: true, webUrl: 'x' }, playwright: {}, sync: { dir, dayglanceFile: file, passphrase: '' } } });
+    adapter.setTransport({ read: async () => ({ tasks: [], blocks: [] }) }, 'mcp'); // MCP view is empty: today has nothing
+    const { tasks } = await adapter.readTasks();
+    deepEqual(tasks.map((t) => t.title).sort(), ['Call plumber', 'Dentist']);
+    equal(tasks.find((t) => t.title === 'Dentist').due_date, '2026-12-24');
+    // An unreadable snapshot falls back to the MCP instead of failing.
+    await writeFile(file, '{not json');
+    deepEqual((await adapter.readTasks()).tasks, []);
+  });
+});

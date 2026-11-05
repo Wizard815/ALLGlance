@@ -68,9 +68,12 @@ export async function findSnapshot(root, filename, maxDepth = 4) {
  * Read + (if needed) decrypt an app's snapshot.
  * @returns {Promise<{ doc: object, path: string } | null>} null when the app has not synced yet.
  */
-export async function readSnapshot({ dir, filename, passphrase = '' }) {
-  const path = await findSnapshot(dir, filename);
+export async function readSnapshot({ dir, filename, passphrase = '', file = '' }) {
+  // `file` pins an exact path (the folder the app was told to sync to), which
+  // matters when more than one folder under `dir` holds a snapshot of that name.
+  const path = file || (await findSnapshot(dir, filename));
   if (!path) return null;
+  if (file) { try { await stat(file); } catch { return null; } }
   const raw = JSON.parse(await readFile(path, 'utf8'));
   let doc = raw;
   if (isEncryptedEnvelope(raw)) {
