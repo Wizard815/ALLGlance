@@ -27,7 +27,7 @@ function buildServer() {
     mcp.status().then((s) => {
       if (s?.ok) {
         console.log('[gateway] dayGLANCE MCP reachable on', config.dayglance.mcpPort, '— using transport A');
-        dayAdapter.setTransport({ read: (date) => mcp.read(date), mode: 'mcp' });
+        dayAdapter.setTransport({ read: (date) => mcp.read(date) }, 'mcp');
       } else {
         console.log('[gateway] dayGLANCE MCP unavailable — Playwright fallback active');
         dayAdapter.setTransport({ read: () => dayAdapter.readLocalStorage() }, 'playwright');

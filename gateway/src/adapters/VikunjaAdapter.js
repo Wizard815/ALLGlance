@@ -113,7 +113,7 @@ export class VikunjaAdapter extends BaseAdapter {
     if (due_date) payload.due_date = /^\d{4}-\d{2}-\d{2}$/.test(due_date) ? `${due_date}T00:00:00Z` : due_date;
     const data = await fetchJson(`${this.#baseUrl}/api/v2/projects/${project}/tasks`, {
       method: 'POST',
-      headers: { ...this.#auth(), 'Content-Type': 'application/json' },
+      headers: { ...this.#auth() },
       body: payload,
       timeoutMs: 10000,
     });
@@ -124,7 +124,7 @@ export class VikunjaAdapter extends BaseAdapter {
       if (uid) {
         await fetchJson(`${this.#baseUrl}/api/v2/tasks/${data.id}/assignees`, {
           method: 'POST',
-          headers: { ...this.#auth(), 'Content-Type': 'application/json' },
+          headers: { ...this.#auth() },
           body: { user_id: Number(uid) },
           timeoutMs: 10000,
         }).catch(() => null);
