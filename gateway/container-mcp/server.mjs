@@ -242,7 +242,7 @@ export function startDayglanceMcpServer(opts = {}) {
   // the app itself). Fallback: a standalone JSON state document.
   const syncFile = opts.syncFile ?? process.env.DAYGLANCE_SYNC_FILE;
   const store = opts.store ?? (syncFile
-    ? createSyncFileStore({ file: syncFile })
+    ? createSyncFileStore({ file: syncFile, passphrase: opts.syncPassphrase ?? process.env.DAYGLANCE_SYNC_PASSPHRASE ?? null })
     : createStateStore({
         file: process.env.DAYGLANCE_STATE_FILE || '/data/dayglance-state.json',
         vault: opts.vault,

@@ -7,6 +7,7 @@
 import { BaseAdapter } from './BaseAdapter.js';
 import LocalStorageReader from '../transport/LocalStorageReader.js';
 import config from '../config.js';
+import { readSnapshot } from '../lib/syncSnapshot.js';
 
 export class LifeglanceAdapter extends BaseAdapter {
   source = 'lifeglance';
@@ -24,7 +25,36 @@ export class LifeglanceAdapter extends BaseAdapter {
     });
   }
 
+  /** Milestones from lifeGLANCE's own synced snapshot: data.lives.default.milestones. */
+  async #readSnapshotMilestones() {
+    const snap = await readSnapshot({
+      dir: this.config.sync.dir,
+      filename: 'lifeglance-sync.json',
+      passphrase: this.config.sync.passphrase,
+    });
+    if (!snap) return null;
+    const life = snap.doc.data.lives?.default ?? {};
+    const milestones = (life.milestones ?? []).map((m) => ({
+      source: 'lifeglance',
+      id: String(m.id),
+      title: m.title ?? '(milestone)',
+      date: typeof m.date === 'string' ? m.date.slice(0, 10) : m.date ? new Date(m.date).toISOString().slice(0, 10) : null,
+      date_precision: m.date_precision ?? null,
+      category: m.category ?? null,
+      note: m.note ?? '',
+      owner_id: null,
+      dayglance_linked: Boolean(m.dayglance_linked),
+      dayglance_task_id: m.dayglance_task_id ?? null,
+      extra: m,
+    }));
+    return { milestones, chapters: life.chapters ?? [] };
+  }
+
   async readMilestones(owner = null) {
+    if (this.config.sync?.dir) {
+      const r = await this.#readSnapshotMilestones();
+      return { milestones: r?.milestones ?? [] }; // not synced yet: empty, never fabricated
+    }
     const store = await this.#reader.read({ webUrl: this.config.lifeglance.webUrl });
     const raw = store['lifeglance-pins'] ?? store['milestones'] ?? {};
     const list = typeof raw === 'string' ? JSON.parse(raw) : raw;
@@ -40,6 +70,15 @@ export class LifeglanceAdapter extends BaseAdapter {
   }
 
   async status() {
+    if (this.config.sync?.dir) {
+      try {
+        const r = await this.#readSnapshotMilestones();
+        if (!r) return { ok: false, error: 'no lifeglance-sync.json yet — enable Cloud Sync in lifeGLANCE', label: this.label };
+        return { ok: true, count: r.milestones.length, label: this.label, mode: 'snapshot' };
+      } catch (err) {
+        return { ok: false, error: err.message, label: this.label };
+      }
+    }
     try {
       const store = await this.#reader.read({ webUrl: this.config.lifeglance.webUrl });
       const count = Object.keys(store ?? {}).length;

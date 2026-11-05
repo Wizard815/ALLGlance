@@ -122,7 +122,8 @@ services:
   # The app then syncs its whole planner to dayglance-sync.json here, and
   # dayglance-mcp reads and writes that same file, so the gateway sees live app
   # data and changes made through MCP flow back into the app automatically.
-  # Leave end-to-end encryption OFF in the app: the MCP needs a readable file.
+  # End-to-end encryption can stay ON: set GLANCE_SYNC_PASSPHRASE (the same
+  # passphrase typed into the apps) and the MCP/gateway decrypt with it.
   dayglance-sync:
     image: ghcr.io/hacdias/webdav:v5.17.3
     container_name: allglance-dayglance-sync
@@ -161,6 +162,9 @@ services:
       # volume (folder = the "Sync folder" set in dayGLANCE). Falls back to the
       # JSON state file above only if this is unset.
       - DAYGLANCE_SYNC_FILE=/sync/${DAYGLANCE_SYNC_FOLDER:-dayglance}/dayglance-sync.json
+      # The household sync passphrase (same one entered in every GLANCE app).
+      # Needed only if end-to-end encryption is on; blank otherwise.
+      - DAYGLANCE_SYNC_PASSPHRASE=${GLANCE_SYNC_PASSPHRASE:-}
       - TZ=${TZ:-UTC}
     volumes:
       # Shared state document; also imported by the gateway so it can seed /
@@ -200,6 +204,11 @@ services:
       # Point the gateway at the containerized dayGLANCE MCP (not loopback).
       - DAYGLANCE_MCP_HOST=dayglance-mcp
       - DAYGLANCE_MCP_PORT=7893
+      # lastGLANCE / lifeGLANCE data comes from the snapshots those apps sync to
+      # the shared WebDAV directory (their data lives in browser IndexedDB, which
+      # nothing server-side can read). Same passphrase as the apps.
+      - GLANCE_SYNC_DIR=/sync
+      - GLANCE_SYNC_PASSPHRASE=${GLANCE_SYNC_PASSPHRASE:-}
     depends_on:
       vikunja:
         condition: service_healthy
@@ -210,6 +219,7 @@ services:
     volumes:
       # Persist the roster cache + any MCP config across container recreation.
       - ${ALLGLANCE_DATA:-/mnt/user/appdata/allglance-data}/gateway:/data
+      - ${ALLGLANCE_DATA:-/mnt/user/appdata/allglance-data}/dayglance-sync:/sync:ro
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8090/health').then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))"]
       interval: 30s

@@ -24,9 +24,15 @@
 // (temp + rename), which also changes its mtime/ETag, so the WebDAV server
 // reports a new version and the app merges it instead of overwriting.
 //
-// LIMIT. This only works while E2E encryption is OFF in the app's Cloud Sync
-// settings (the snapshot must be readable JSON). An encrypted snapshot is
-// detected and reported; it is never overwritten.
+// ENCRYPTION. If the app has end-to-end encryption on, the snapshot is an
+// envelope { v: 1, enc: 'AES-GCM-256', data: base64(salt16 | iv12 | ciphertext) }
+// whose key is PBKDF2-SHA256 (310 000 iterations) of the user's sync passphrase
+// and the embedded salt (@glance-apps/sync crypto.js). Give the MCP the same
+// passphrase (DAYGLANCE_SYNC_PASSPHRASE) and it decrypts to read, and on write
+// re-encrypts with the file's EXISTING salt and a fresh IV — keeping the salt is
+// essential: the apps cache a key derived for that salt and could not read a
+// file re-salted by us without asking for the passphrase again. Without the
+// passphrase an encrypted file is reported, never overwritten.
 
 import { readFile, writeFile, rename, stat, mkdir, unlink } from 'node:fs/promises';
 import { dirname, basename, join } from 'node:path';
@@ -46,21 +52,74 @@ const EMPTY_DATA = () => ({
 
 const clone = (v) => (typeof structuredClone === 'function' ? structuredClone(v) : JSON.parse(JSON.stringify(v)));
 
-/** Parse a snapshot document; throws a descriptive error if it is not a readable dayGLANCE snapshot. */
-export function parseSnapshot(raw) {
+const PBKDF2_ITERATIONS = 310_000;
+
+export const isEncryptedEnvelope = (v) =>
+  v !== null && typeof v === 'object' && v.v === 1 && v.enc === 'AES-GCM-256' && typeof v.data === 'string';
+
+async function deriveKey(passphrase, salt) {
+  const material = await crypto.subtle.importKey('raw', new TextEncoder().encode(passphrase), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt, iterations: PBKDF2_ITERATIONS, hash: 'SHA-256' },
+    material,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt'],
+  );
+}
+
+/** Decrypt an app envelope with the shared passphrase → { doc, salt }. */
+export async function decryptEnvelope(envelope, passphrase) {
+  const packed = Buffer.from(envelope.data, 'base64');
+  const salt = new Uint8Array(packed.subarray(0, 16));
+  const iv = new Uint8Array(packed.subarray(16, 28));
+  const ciphertext = new Uint8Array(packed.subarray(28));
+  let plain;
+  try {
+    plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, await deriveKey(passphrase, salt), ciphertext);
+  } catch {
+    throw new Error('Cannot decrypt dayglance-sync.json: wrong DAYGLANCE_SYNC_PASSPHRASE (or the file is corrupted).');
+  }
+  return { doc: JSON.parse(new TextDecoder().decode(plain)), salt };
+}
+
+/** Encrypt a snapshot document into an envelope, reusing `salt` and a fresh IV. */
+export async function encryptDoc(doc, passphrase, salt) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await deriveKey(passphrase, salt), new TextEncoder().encode(JSON.stringify(doc))));
+  const packed = new Uint8Array(salt.length + iv.length + ct.length);
+  packed.set(salt, 0);
+  packed.set(iv, salt.length);
+  packed.set(ct, salt.length + iv.length);
+  return { v: 1, enc: 'AES-GCM-256', data: Buffer.from(packed).toString('base64') };
+}
+
+/**
+ * Parse a snapshot file's text → { doc, salt }. `salt` is set when the file is
+ * encrypted (so writes can re-encrypt with it). Throws a descriptive error if it
+ * is not a readable dayGLANCE snapshot.
+ */
+export async function parseSnapshot(raw, passphrase = null) {
   let doc;
   try {
     doc = JSON.parse(raw);
   } catch {
     throw new Error('dayglance-sync.json is not valid JSON');
   }
-  if (!doc || typeof doc !== 'object' || !doc.data || typeof doc.data !== 'object') {
-    throw new Error(
-      'dayglance-sync.json has no readable "data" (is end-to-end encryption enabled in dayGLANCE → Settings → Sync? ' +
-        'The MCP can only read the unencrypted snapshot.)',
-    );
+  let salt = null;
+  if (isEncryptedEnvelope(doc)) {
+    if (!passphrase) {
+      throw new Error(
+        'dayglance-sync.json is end-to-end encrypted: set DAYGLANCE_SYNC_PASSPHRASE to the same sync passphrase ' +
+          'you entered in dayGLANCE (Settings → Sync → End-to-end encryption).',
+      );
+    }
+    ({ doc, salt } = await decryptEnvelope(doc, passphrase));
   }
-  return doc;
+  if (!doc || typeof doc !== 'object' || !doc.data || typeof doc.data !== 'object') {
+    throw new Error('dayglance-sync.json has no readable "data" (unexpected format).');
+  }
+  return { doc, salt };
 }
 
 /**
@@ -103,12 +162,13 @@ export function applyListDiff(base, draft, latest, stampAt = null) {
 /**
  * @param {object} opts
  * @param {string} opts.file  Path to dayglance-sync.json on the shared volume.
+ * @param {string} [opts.passphrase]  Shared sync passphrase (needed iff the app has E2E encryption on).
  * @param {() => string} [opts.now]  ISO clock (injectable for tests).
  */
-export function createSyncFileStore({ file, now = () => new Date().toISOString() } = {}) {
+export function createSyncFileStore({ file, passphrase = null, now = () => new Date().toISOString() } = {}) {
   if (!file) throw new Error('createSyncFileStore: file is required');
 
-  let cache = null; // { key, doc }
+  let cache = null; // { key, doc, salt }
   let base = null; // snapshot of the four slices at beginWrite
   let draft = null;
   let chain = Promise.resolve(); // serializes commits
@@ -118,12 +178,12 @@ export function createSyncFileStore({ file, now = () => new Date().toISOString()
     try {
       st = await stat(file);
     } catch {
-      return { doc: null, key: 'absent' };
+      return { doc: null, salt: null, key: 'absent' };
     }
     const key = `${st.mtimeMs}:${st.size}`;
     if (cache && cache.key === key) return cache;
-    const doc = parseSnapshot(await readFile(file, 'utf8'));
-    cache = { key, doc };
+    const { doc, salt } = await parseSnapshot(await readFile(file, 'utf8'), passphrase);
+    cache = { key, doc, salt };
     return cache;
   }
 
@@ -132,10 +192,11 @@ export function createSyncFileStore({ file, now = () => new Date().toISOString()
     return { ...EMPTY_DATA(), ...clone(data), weekStartDay: data.weekStartDay ?? 0 };
   }
 
-  async function writeDoc(doc) {
+  async function writeDoc(doc, salt) {
     await mkdir(dirname(file), { recursive: true });
     const tmp = join(dirname(file), `.${basename(file)}.${process.pid}.tmp`);
-    await writeFile(tmp, JSON.stringify(doc), 'utf8');
+    const body = salt ? await encryptDoc(doc, passphrase, salt) : doc;
+    await writeFile(tmp, JSON.stringify(body), 'utf8');
     try {
       await rename(tmp, file);
     } catch (err) {
@@ -172,7 +233,7 @@ export function createSyncFileStore({ file, now = () => new Date().toISOString()
       if (!mine.draft) return;
       const run = async () => {
         cache = null; // always diff against the file as it is NOW
-        const { doc: latestDoc } = await readDoc();
+        const { doc: latestDoc, salt } = await readDoc();
         const doc = latestDoc
           ? clone(latestDoc)
           : { schemaVersion: 1, appId: 'dayglance', version: 2, lastModified: now(), data: EMPTY_DATA() };
@@ -186,7 +247,7 @@ export function createSyncFileStore({ file, now = () => new Date().toISOString()
         }
         if (!changed) return;
         doc.lastModified = now();
-        await writeDoc(doc);
+        await writeDoc(doc, salt);
       };
       const p = chain.then(run, run);
       chain = p.catch(() => {});
