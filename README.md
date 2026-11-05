@@ -69,33 +69,41 @@ from one place.
 
 ## The one MCP / REST surface
 
-**MCP:** `POST /mcp` (Streamable HTTP) — initialize, then `tools/list` / `tools/call`.
+**MCP:** `POST /mcp` (Streamable HTTP, stateless: any number of clients, no
+session handshake state to lose). **One endpoint, ten tools**, kept few on
+purpose so an agent can choose well.
 
-| Tool | Purpose | Source |
+| Tool | Use it for | Source |
 |---|---|---|
-| `allglance_list_users` | The family roster (who is who) | dayGLANCE + vikunja |
-| `allglance_list_tasks` | Tasks across all sources (optional `owner_id`) | vikunja + dayGLANCE |
-| `allglance_list_days` | Time blocks + tasks for one date (optional `owner_id`) | dayGLANCE + vikunja |
-| `allglance_create_task` | Create a task (defaults to vikunja) | vikunja |
-| `allglance_update_task` | Update a task where it lives: done, priority, title, due date | vikunja |
-| `vikunja_list_tasks` | List vikunja tasks in open projects (optional `owner_id`) | vikunja |
-| `vikunja_create_task` | Create a vikunja task (needs `project_id`) | vikunja |
-| `vikunja_update_task` | Update a vikunja task (done, priority, title, due date) | vikunja |
+| `allglance_get_day` | "What's on today / tomorrow?" (blocks in time order, tasks due, overdue count) | dayGLANCE + Vikunja |
+| `allglance_list_tasks` | Filtered task lists (status, source, owner, due range, limit); compact | Vikunja + dayGLANCE |
+| `allglance_list_chores` | Recurring chores, last done, overdue | lastGLANCE |
+| `allglance_list_milestones` | Life-timeline events, optional date range | lifeGLANCE |
+| `allglance_list_users` | Turn a name into the `owner_id` the other tools take | all |
+| `allglance_create_task` | New task: Vikunja (default) or dayGLANCE (scheduled or inbox) | Vikunja / dayGLANCE |
+| `allglance_update_task` | Done / rename / priority / due date / (dayGLANCE) schedule | Vikunja / dayGLANCE |
+| `vikunja_native_find_action` · `_do_action` · `_filter_syntax` | Anything else in Vikunja (labels, buckets, comments, filters) | Vikunja |
 
-Each adapter registers its own tools, so adding an app = adding an adapter.
+Design choices: results are **compact** (no raw app records; `source` + `id` go
+straight into `allglance_update_task`), lists have **filters and a default limit**
+so an agent never pulls everything, and each tool's description says when to use
+it and which sibling to use instead. lastGLANCE and lifeGLANCE are read-only here
+(their apps own that data). The old per-adapter `vikunja_*` tools were removed as
+duplicates; their REST routes remain. `VIKUNJA_NATIVE_TOOLS=all` exposes all 11 of
+Vikunja's own tools if you want them (default `meta`: the three above).
 
 **Vikunja's native MCP (Vikunja 2.7+).** Vikunja ships its own MCP server
 (`/api/v2/mcp`, generated from its OpenAPI spec). The gateway discovers it and
-re-exposes its tools as `vikunja_native_*` (`tasks_list`, `tasks_create`,
-`tasks_update`, `projects_list`, `task_assignees_*`, `filter_syntax`, plus
-`find_action` / `do_action`, which reach every other Vikunja action your token
-allows). Use them for anything Vikunja-specific (filters, labels, buckets);
-use `allglance_*` / `vikunja_*` when you want owner scoping across apps. The
-native tools are Vikunja's own and are **not owner-scoped**. They need an API
-token with the `mcp.access` permission: create one token with `mcp.access` plus
-the project/task permissions you want and use it as `VIKUNJA_TOKEN` (or set
-`VIKUNJA_MCP_TOKEN` separately). Without it, or on Vikunja older than 2.7, they
+re-exposes its discovery tools; `find_action` / `do_action` reach every other
+Vikunja action your token allows. The native tools are Vikunja's own and are
+**not owner-scoped**. They need an API token with the `mcp.access` permission
+(`scripts/setup.sh` creates one). Without it, or on Vikunja older than 2.7, they
 simply don't appear. Switch off with `ENABLE_VIKUNJA_MCP=false`.
+
+**CalDAV is separate.** Tasks are also served over CalDAV by Vikunja itself
+(`http://<host>:3457/dav/`, tasks only) for CalDAV apps and Home Assistant's
+calendar integration. That is a different protocol on Vikunja's own port, not
+part of the gateway. Agents use the single MCP/REST endpoint above.
 
 **`dayglance-mcp`** exposes dayGLANCE's full native tool set to the gateway:
 
@@ -157,37 +165,41 @@ expose it, not something the gateway can invent.
 - Docker + Compose (Unraid appdata container, or any Docker host).
 - Node ≥ 20 and pnpm if you run the gateway or `dayglance-mcp` from source.
 
-### Docker (recommended)
+### Docker (recommended): one command
 
 ```bash
-# 1. Configure it.
-cp gateway/.env.example .env.allglance
-#    Edit .env.allglance: at minimum set VIKUNJA_TOKEN and DAYGLANCE_MCP_TOKEN.
-#    (The gateway and the dayglance-mcp service must share the same
-#     DAYGLANCE_MCP_TOKEN.)
-
-#    Also set VIKUNJA_SERVICE_SECRET and GLANCEVAULT_DEVICE_TOKEN (compose
-#    refuses to start without them). .env.allglance is gitignored.
-
-# 2. Build + run the stack on one internal network. --env-file is required so
-#    compose can substitute the secrets into docker-compose.yml.
-docker compose --env-file .env.allglance up --build
-
-# 3. Check it.
-curl http://localhost:8090/health
-curl http://localhost:8090/api/allglance/users
+git clone https://github.com/Wizard815/ALLGlance && cd ALLGlance
+scripts/setup.sh
 ```
 
-The gateway reaches dayglance over MCP by service name
+`setup.sh` is safe to re-run. It generates every secret into `.env.allglance`
+(mode 600, gitignored), asks you for **one** thing (your household sync
+passphrase), creates the data folders with the right owner, starts Vikunja,
+creates its user and an API token that includes MCP access, builds and starts
+everything, waits for the gateway, and prints: the MCP URL + token for your
+agent, the sync settings to type into each GLANCE app, and the Vikunja login.
+
+What remains manual is inherent to the apps (their settings live in the browser):
+once per device, enter the printed WebDAV settings and your passphrase in
+dayGLANCE / lastGLANCE / lifeGLANCE (see
+[Connecting the GLANCE apps](#connecting-the-glance-apps-one-time-per-device)).
+
+Doing it by hand instead:
+
+```bash
+cp gateway/.env.example .env.allglance      # fill in the secrets and tokens
+docker compose --env-file .env.allglance up -d --build
+curl http://localhost:8090/health
+```
+
+The gateway reaches the apps by service name on the compose network
 (`DAYGLANCE_MCP_HOST=dayglance-mcp`), set in `docker-compose.yml`.
 
 **Building behind a TLS-intercepting proxy** (corporate proxy, CI sandbox): image
 builds fail verifying npm's certificate unless they trust the proxy's CA. Put the
-CA bundle at `docker/proxy-ca.crt` (gitignored) and add the override:
-
-```bash
-docker compose -f docker-compose.yml -f docker/compose.proxy-ca.yml --env-file .env.allglance up --build
-```
+CA bundle at `docker/proxy-ca.crt` (gitignored) and set
+`COMPOSE_FILE=docker-compose.yml:docker/compose.proxy-ca.yml` before running
+`scripts/setup.sh` (or any `docker compose` command).
 
 The gateway image no longer bundles Chromium by default (the legacy browser
 reader is opt-in: `--build-arg INSTALL_BROWSER=true`).

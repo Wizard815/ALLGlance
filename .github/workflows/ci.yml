@@ -35,6 +35,8 @@ jobs:
           submodules: recursive
       - name: Pinned versions agree (submodule = compose = .env.example)
         run: ./scripts/upstream.sh verify
+      - name: Shell scripts parse
+        run: bash -n scripts/setup.sh && bash -n scripts/upstream.sh
       - name: Validate docker-compose.yml
         run: |
           touch .env.allglance
