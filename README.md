@@ -9,37 +9,30 @@ anything that speaks MCP or HTTP) can read and update the whole family's day
 from one place.
 
 ```
-                    ┌─────────────────────────────────────────┐
-   Claude / HA ───▶ │  allglance-gateway   :8090              │
-   (MCP or REST)    │  ONE MCP server + REST + roster         │
-                    └───────┬───────────────┬─────────────────┘
-                            │               │
-              REST /api/v2  │               │  MCP /mcp
-                            ▼               ▼
-                    ┌──────────────┐  ┌──────────────────┐
-                    │   vikunja    │  │  dayglance-mcp   │  ← container port of
-                    │  :3456       │  │  :7893           │    dayGLANCE's Electron MCP
-                    └──────────────┘  └──────────────────┘
-                            ▲               ▲
-                            │  CalDAV       │  state document (volume)
-                    ┌───────┴───────────────┴─────────────────┐
-                    │  GLANCE browser apps (dayglance /       │
-                    │  lastglance / lifeglance)               │
-                    └──────────────────┬──────────────────────┘
-                                       │  encrypted sync (optional)
-                                       ▼
-                              ┌──────────────────┐
-                              │   glance-vault   │  zero-knowledge sync
-                              │   :8080          │
-                              └──────────────────┘
+   Claude / HA ───▶  ┌───────────────────── allglance (ONE container) ─────────────────────┐
+   (MCP / REST)      │  gateway :8090   MCP + REST + CalDAV  ◀── calendar apps, HA        │
+   CalDAV apps ────▶ │      │                                                             │
+                     │      ├── dayGLANCE MCP (loopback)  reads/writes the app's data     │
+   GLANCE apps ────▶ │      │        ▲                                                    │
+   (Cloud Sync)      │      │        │ same /sync directory                               │
+                     │  WebDAV sync server :8091 ◀── dayGLANCE / lastGLANCE / lifeGLANCE   │
+                     └──────┬──────────────────────────────────────────────────────────────┘
+                            │ REST + CalDAV
+                            ▼
+                      ┌──────────────┐
+                      │   vikunja    │   (real server + DB: your tasks)
+                      │  :3456       │
+                      └──────────────┘
 ```
 
 ## What this actually is (read this first)
 
-- **The gateway is the product.** `allglance-gateway` is one MCP server + one
+- **AllGLANCE is one container.** It runs three supervised processes: the gateway,
+  the dayGLANCE MCP, and the WebDAV sync server the apps sync to (see below).
+- **The gateway is the product.** It is one MCP server + one
   REST API that fronts every app. It is the single thing you connect Claude or
   Home Assistant to.
-- **`dayglance-mcp` is a container port of dayGLANCE's MCP.** dayGLANCE's own
+- **The dayGLANCE MCP is a container port of dayGLANCE's MCP.** dayGLANCE's own
   MCP only exists inside its Electron desktop app; the published Docker image is
   nginx + a static SPA with **no MCP**. This repo ships a small Node service
   (`gateway/container-mcp/`) that reuses dayGLANCE's *real* pure model and
@@ -58,10 +51,8 @@ from one place.
 
 | Service | Port | What it is |
 |---|---|---|
-| `allglance-gateway` | `8090` | The one MCP (`/mcp`) + REST (`/api/allglance/`) front door |
-| `dayglance-mcp` | `7893` (internal) | Container port of dayGLANCE's MCP; the gateway's dayGLANCE source |
+| **`allglance`** (one container) | `8090`, `8091` | **8090:** the one MCP (`/mcp`) + REST (`/api/allglance/`) + CalDAV (`/dav`) front door. **8091:** the WebDAV sync server your apps sync to. Inside it, supervised: the gateway, the dayGLANCE MCP (loopback only) and the WebDAV server |
 | `vikunja` | `3457` | Task/calendar manager (web UI, CalDAV, REST `/api/v2/`) |
-| `dayglance-sync` | `8091` | WebDAV server dayGLANCE syncs to; `dayglance-mcp` reads/writes the same file |
 | `glance-vault` | `8088` | **Optional, off by default** (`--profile vault`): zero-knowledge sync backend for the browser apps; nothing here needs it |
 | `dayglance` | `6767` | dayGLANCE web build |
 | `lastglance` | `3000` | lastGLANCE web build (chores) |
@@ -113,7 +104,7 @@ web UI are not exposed through the gateway. Turn it off with
 `ENABLE_CALDAV_PROXY=false`. Put TLS in front (a reverse proxy) for anything beyond
 your LAN: Basic auth is only as private as the connection.
 
-**`dayglance-mcp`** exposes dayGLANCE's full native tool set to the gateway:
+**The dayGLANCE MCP** (inside the `allglance` container, on loopback) exposes dayGLANCE's full native tool set to the gateway:
 
 ```
 dayglance_ping · dayglance_get_today · dayglance_get_day
@@ -171,7 +162,7 @@ expose it, not something the gateway can invent.
 ### Prerequisites
 
 - Docker + Compose (Unraid appdata container, or any Docker host).
-- Node ≥ 20 and pnpm if you run the gateway or `dayglance-mcp` from source.
+- Node ≥ 20 and pnpm if you run the gateway or the dayGLANCE MCP from source.
 
 ### Docker (recommended): one command
 
@@ -201,7 +192,7 @@ curl http://localhost:8090/health
 ```
 
 The gateway reaches the apps by service name on the compose network
-(`DAYGLANCE_MCP_HOST=dayglance-mcp`), set in `docker-compose.yml`.
+(the dayGLANCE MCP and the WebDAV server live in the same container as the gateway), set in `docker-compose.yml`.
 
 **Building behind a TLS-intercepting proxy** (corporate proxy, CI sandbox): image
 builds fail verifying npm's certificate unless they trust the proxy's CA. Put the
@@ -229,7 +220,7 @@ DAYGLANCE_MCP_TOKEN=secret DAYGLANCE_STATE_FILE=/data/dayglance-state.json node 
 | App | Gateway reads it via | Notes |
 |---|---|---|
 | vikunja | REST `/api/v2/` | Real server + DB. Works today. |
-| dayGLANCE | `dayglance-mcp` (MCP) | Container port of dayGLANCE's model. |
+| dayGLANCE | the dayGLANCE MCP (in `allglance`) | Container port of dayGLANCE's model. |
 | lastGLANCE | intents / localStorage adapter | Chore data natively flows as encrypted intents. |
 | lifeGLANCE | localStorage adapter | Milestones, no ownership model. |
 
@@ -237,9 +228,9 @@ DAYGLANCE_MCP_TOKEN=secret DAYGLANCE_STATE_FILE=/data/dayglance-state.json node 
   WebDAV directory (see [Connecting the GLANCE apps](#connecting-the-glance-apps-one-time-per-device)).
   The older browser-reader fallback (used only when `GLANCE_SYNC_DIR` is unset)
   cannot work: lastGLANCE stores data in IndexedDB, not localStorage.
-- **`dayglance-mcp` state (automatic):** the stack runs `dayglance-sync`, a
+- **dayGLANCE state (automatic):** the `allglance` container includes a
   WebDAV server for dayGLANCE's built-in Cloud Sync. dayGLANCE syncs its whole
-  planner to `dayglance-sync.json` there, and `dayglance-mcp` reads *and writes*
+  planner to `dayglance-sync.json` there, and the dayGLANCE MCP reads *and writes*
   that same file. So the gateway sees live app data, and tasks created or
   changed through MCP flow back into the app on its next sync. See
   [Connecting the GLANCE apps](#connecting-the-glance-apps-one-time-per-device).
@@ -255,12 +246,12 @@ DAYGLANCE_MCP_TOKEN=secret DAYGLANCE_STATE_FILE=/data/dayglance-state.json node 
 ## Connecting the GLANCE apps (one time per device)
 
 All three apps sync through the same engine, so they all point at the **same
-WebDAV server** (`dayglance-sync`) with the **same sync passphrase**:
+WebDAV server** (inside the `allglance` container) with the **same sync passphrase**:
 
 | Field | Value |
 |---|---|
 | Provider | Generic WebDAV |
-| URL | `http://<host>:8091` (web builds inside this stack: `http://dayglance-sync:6065`) |
+| URL | `http://<host>:8091` (web builds inside this stack: `http://allglance:6065`) |
 | Username / password | `DAYGLANCE_SYNC_USER` / `DAYGLANCE_SYNC_PASSWORD` from `.env.allglance` |
 | Encryption | on, with your sync passphrase — also set it as `GLANCE_SYNC_PASSPHRASE` in `.env.allglance` |
 | Sync folder | dayGLANCE: `dayglance` (must match `DAYGLANCE_SYNC_FOLDER`); lastGLANCE / lifeGLANCE: leave their defaults (`GLANCE/lastglance`, `GLANCE/lifeglance`) — the gateway finds the files wherever they are |
@@ -280,7 +271,7 @@ passphrase an encrypted file is reported, never overwritten.
 
 | App | Into the gateway | Back to the app |
 |---|---|---|
-| dayGLANCE | live tasks/blocks via `dayglance-mcp` | tasks created/changed through MCP appear on its next sync |
+| dayGLANCE | live tasks/blocks via its MCP | tasks created/changed through MCP appear on its next sync |
 | lastGLANCE | chores, last completion, cadence, overdue (from `lastglance-sync.json`) | read-only |
 | lifeGLANCE | milestones (from `lifeglance-sync.json`) | read-only |
 
@@ -300,7 +291,7 @@ separate setting from Cloud Sync in each app:
 
 | In | Setting | Value |
 |---|---|---|
-| lastGLANCE | Settings -> Integration (the plug) | WebDAV URL `http://<host>:8091` (or `http://dayglance-sync:6065` for the web build), the same user/password, folder `GLANCE/events`, enabled |
+| lastGLANCE | Settings -> Integration (the plug) | WebDAV URL `http://<host>:8091` (or `http://allglance:6065` for the web build), the same user/password, folder `GLANCE/events`, enabled |
 | dayGLANCE | Settings -> Integrations (intents) | the same URL, user/password, events path `/GLANCE/events/` |
 
 Then a chore that is overdue (and has a cadence and some history) shows a "send
@@ -315,7 +306,7 @@ other derives its key from it; the chore title is not readable on the server).
 The **return path** also works: ticking the task in dayGLANCE logs the chore as
 done in lastGLANCE. That needed a workaround: dayGLANCE 5.11 names completion
 events `<uuid>.json`, which the shared intents library (and so lastGLANCE)
-ignores, so `dayglance-mcp` renames such files in the events folder to the
+ignores, so the container renames such files in the events folder to the
 timestamped form (`DAYGLANCE_EVENTS_ROOT`, see `eventNormalizer.mjs`). Remove it
 once upstream fixes `useNotifyEmitter.js`.
 
@@ -335,7 +326,7 @@ Verified against a live Vikunja v2.7.1:
 - **Export:** `vikunja dump` (CLI, whole instance) and the v2
   `/user/export/request` endpoint; CSV and other import via `/migration/*`.
 - dayGLANCE tasks are not in CalDAV by themselves; they reach the gateway through
-  `dayglance-mcp`.
+  the dayGLANCE MCP.
 
 ### Home Assistant (verified)
 
@@ -352,8 +343,7 @@ not shown in Home Assistant's to-do UI.
 /mnt/user/appdata/allglance-data/      # ALLGLANCE_DATA; kept outside the git checkout
 ├── vikunja/{db,files,logs}
 ├── gateway         # roster cache
-├── dayglance-sync  # dayglance/dayglance-sync.json (owned 99:100)
-├── dayglance-mcp   # dayglance-state.json fallback (owned 99:100)
+├── dayglance-sync  # the WebDAV root: dayglance/dayglance-sync.json, GLANCE/... (owned 99:100)
 └── glance-vault    # glancevault.db (owned 99:100)
 ```
 
@@ -372,7 +362,7 @@ AllGLANCE/
 │   ├── container-mcp/    #   container port of dayGLANCE's MCP — our code
 │   ├── DESIGN.md         #   design document
 │   └── Dockerfile
-├── docker-compose.yml    # the whole stack (7 services)
+├── docker-compose.yml    # the whole stack (5 containers: allglance + 4 apps)
 └── gateway/.env.example  # copy to .env.allglance
 ```
 
@@ -387,22 +377,27 @@ work lives under `gateway/`.
 
 ## Resource use and load (measured)
 
-Whole stack (7 containers: dayGLANCE, lastGLANCE, lifeGLANCE, Vikunja, the gateway,
-dayglance-mcp, the WebDAV sync server), measured on a 4-core / 16 GB host:
+Whole stack: **5 containers** (dayGLANCE, lastGLANCE, lifeGLANCE, Vikunja, and the single
+`allglance` container holding the gateway, the dayGLANCE MCP and the WebDAV server),
+measured on a 4-core / 16 GB host:
 
 | | |
 |---|---|
-| Idle memory | about 350-380 MiB total (gateway ~145, Vikunja ~85-110, dayglance-mcp ~60, the rest 2-30 each) |
-| Memory under load | peaked at about 417 MiB over an hour; gateway and Vikunja levelled off, dayglance-mcp grew a few MiB/hour |
+| Idle memory | about 295 MiB total: `allglance` ~130, Vikunja ~95, the three web apps 14-29 each |
+| Image size | the `allglance` image is 430 MB |
 | CPU | well under 1% average per container; short bursts to 10-20% on writes |
 | Disk | tiny: sync file 16 to 31 KB and the Vikunja DB 0.8 MB after an hour of writes |
+
+The soak below was run while the three services were still separate containers (idle
+total then about 380 MiB, peak 417 MiB over the hour); merging them only changed packaging,
+and the functional checks were re-run on the merged container.
 
 One-hour soak (`scripts/soak.mjs`): 500 requests (reads, writes, updates, REST and MCP, plus
 a dayGLANCE app session writing mid-run). **500/500 succeeded**, p50 94 ms, p95 285 ms,
 p99 432 ms, max 1.0 s (dayGLANCE writes are the slowest, p50 about 280 ms), no latency
 drift between the first and last third, no restarts, no errors in any container log,
 no lost or duplicated tasks. One hour cannot rule out a leak of a few MiB per hour; the
-gateway and Vikunja plateaued, dayglance-mcp is the one to watch on a long run.
+gateway and Vikunja plateaued, the dayGLANCE MCP is the one to watch on a long run.
 
 Re-run it against your own server (it creates real "SOAK ..." tasks; delete them afterwards):
 
@@ -445,6 +440,6 @@ on 2.7.1 and 2.8.0. Pins are deliberately exact.
 - The namespaced MCP tools sketched in `gateway/DESIGN.md` §6 (`calendar_*`,
   `goals_*`, `habits_*`, `get_week`, `move_block`, …) are **not** all
   implemented; the shipped set is the `allglance_*` / `vikunja_*` tools above
-  plus dayGLANCE's native tools behind `dayglance-mcp`.
+  plus dayGLANCE's native tools behind its MCP.
 - dayGLANCE MCP hydration from GLANCEvault needs the sync passphrase (a vault
   provider hook is reserved in `container-mcp/state.mjs`).
