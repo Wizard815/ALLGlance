@@ -10,3 +10,8 @@ src/**/*.test.js
 **/*.md
 !DESIGN.md
 .github
+
+test
+container-mcp/test
+container-mcp/node_modules
+container-mcp/Dockerfile

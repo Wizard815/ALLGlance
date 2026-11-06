@@ -273,7 +273,8 @@ export function startDayglanceMcpServer(opts = {}) {
   });
 
   srv.on('error', (e) => logError(`[dayGLANCE MCP] listener error: ${e.message}`));
-  srv.listen(port, '0.0.0.0', () => log(`[dayGLANCE MCP] listening on 0.0.0.0:${port}/mcp (container mode)`));
+  const bind = process.env.DAYGLANCE_MCP_BIND || '0.0.0.0';
+  srv.listen(port, bind, () => log(`[dayGLANCE MCP] listening on ${bind}:${port}/mcp (container mode)`));
   return srv;
 }
 

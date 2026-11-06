@@ -70,7 +70,7 @@ fi
 # --- 2. data directories -----------------------------------------------------
 say "Data directories"
 DATA=$(get ALLGLANCE_DATA)
-mkdir -p "$DATA"/{vikunja/{db,files,logs},dayglance-sync,dayglance-mcp,gateway,glance-vault}
+mkdir -p "$DATA"/{vikunja/{db,files,logs},dayglance-sync,gateway,glance-vault}
 if [[ $EUID -eq 0 ]]; then chown -R 99:100 "$DATA"; else echo "(not root: leaving ownership as is; the containers run as 99:100)"; fi
 echo "$DATA"
 
@@ -91,7 +91,7 @@ if [[ -z "$(get VIKUNJA_TOKEN)" ]]; then
         -d "{\"username\":\"$VUSER\",\"password\":\"$VPASS\"}" | sed -E 's/.*"token":"([^"]+)".*/\1/')
   EXPIRES=$(date -u -d '+5 years' +%Y-%m-%dT00:00:00Z 2>/dev/null || date -u -v+5y +%Y-%m-%dT00:00:00Z)
   TOKEN=$(curl -fsS -X POST "http://localhost:$PORT/api/v2/tokens" -H "Authorization: Bearer $JWT" -H 'content-type: application/json' \
-        -d "{\"title\":\"allglance-gateway\",\"expires_at\":\"$EXPIRES\",\"permissions\":{\"mcp\":[\"access\"],\"projects\":[\"read_all\",\"read_one\",\"users_search\"],\"tasks\":[\"read_all\",\"read_one\",\"create\",\"update\"],\"tasks_assignees\":[\"create\",\"read_all\"]}}" \
+        -d "{\"title\":\"allglance\",\"expires_at\":\"$EXPIRES\",\"permissions\":{\"mcp\":[\"access\"],\"projects\":[\"read_all\",\"read_one\",\"users_search\"],\"tasks\":[\"read_all\",\"read_one\",\"create\",\"update\"],\"tasks_assignees\":[\"create\",\"read_all\"]}}" \
         | sed -E 's/.*"token":"(tk_[^"]+)".*/\1/')
   [[ "$TOKEN" == tk_* ]] || { echo "could not create the Vikunja API token" >&2; exit 1; }
   set_kv VIKUNJA_TOKEN "$TOKEN"
@@ -106,7 +106,7 @@ dc up -d --build
 say "Waiting for the gateway"
 GPORT=8090
 for _ in $(seq 1 60); do curl -fsS "http://localhost:$GPORT/health" >/dev/null 2>&1 && break; sleep 2; done
-curl -fsS "http://localhost:$GPORT/health" >/dev/null || { echo "gateway not healthy; see: docker logs allglance-gateway" >&2; exit 1; }
+curl -fsS "http://localhost:$GPORT/health" >/dev/null || { echo "gateway not healthy; see: docker logs allglance" >&2; exit 1; }
 
 # --- 5. what to do next --------------------------------------------------------------
 HOST=$(hostname -I 2>/dev/null | awk '{print $1}'); HOST=${HOST:-localhost}
@@ -120,7 +120,7 @@ AllGLANCE is running.
       Header    Authorization: Bearer $(get GATEWAY_TOKEN)
 
  2. In each GLANCE app (one time per device), Cloud Sync -> WebDAV:
-      URL       http://$HOST:8091          (web builds in this stack: http://dayglance-sync:6065)
+      URL       http://$HOST:8091          (web builds in this stack: http://allglance:6065)
       User      $(get DAYGLANCE_SYNC_USER)
       Password  $(get DAYGLANCE_SYNC_PASSWORD)
       Encrypt   on, with your sync passphrase

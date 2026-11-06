@@ -65,7 +65,14 @@ function buildServer() {
 
   // Health + introspection.
   app.get('/health', async (_req, res) => {
-    res.json(await gateway.health());
+    const out = await gateway.health();
+    // Inside the single allglance container the WebDAV server is a sibling process;
+    // report whether it is answering (any HTTP reply, including 401, means it is up).
+    if (process.env.SYNC_WEBDAV_PORT) {
+      const ok = await fetch(`http://127.0.0.1:${process.env.SYNC_WEBDAV_PORT}/`, { method: 'OPTIONS', signal: AbortSignal.timeout(2000) }).then(() => true, () => false);
+      out.services = { sync: { ok } };
+    }
+    res.json(out);
   });
 
   // Optional bearer token for everything except /health. Without it anyone who

@@ -8,10 +8,7 @@
 # Put your proxy's CA bundle at docker/proxy-ca.crt (gitignored), or set EXTRA_CA_FILE
 # to a path inside this directory.
 services:
-  dayglance-mcp:
-    build:
-      secrets: [extra_ca]
-  allglance-gateway:
+  allglance:
     build:
       secrets: [extra_ca]
 secrets:

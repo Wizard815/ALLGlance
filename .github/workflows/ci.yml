@@ -1,6 +1,6 @@
 name: CI
 
-# Gateway + dayglance-mcp tests, and a compose sanity check. The GLANCE apps and
+# Gateway + dayGLANCE MCP tests, and a compose sanity check. The GLANCE apps and
 # vikunja are consumed as prebuilt images, so nothing here builds them.
 on:
   pull_request:
@@ -21,7 +21,7 @@ jobs:
           corepack enable
           pnpm install --frozen-lockfile
           node --test
-      - name: dayglance-mcp tests
+      - name: dayGLANCE MCP tests
         working-directory: gateway/container-mcp
         run: |
           npm install --no-audit --no-fund
@@ -48,8 +48,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build dayglance-mcp and gateway images
+      - name: Build the allglance image
         run: |
           touch .env.allglance
           VIKUNJA_SERVICE_SECRET=x DAYGLANCE_SYNC_PASSWORD=x \
-            docker compose build dayglance-mcp allglance-gateway
+            docker compose build allglance
