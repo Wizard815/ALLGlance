@@ -33,7 +33,7 @@ export function buildTools(gw) {
       name: 'allglance_get_day',
       description:
         'Show what is on for one day (default today): dayGLANCE time blocks in time order, plus open Vikunja tasks due that day, ' +
-        'and a count of overdue tasks. Use this for "what\'s on today/tomorrow?" questions. ' +
+        'and a count of overdue tasks; with Omi wired in, also omi_day_summary (the wearable\'s end-of-day summary, null until that day is bundled). Use this for "what\'s on today/tomorrow?" questions. ' +
         'For longer lists or filtering use allglance_list_tasks; for chores use allglance_list_chores.',
       inputSchema: {
         type: 'object',
