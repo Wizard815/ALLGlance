@@ -72,7 +72,7 @@ export const config = {
     // An Omi MCP key (omi_mcp_...): Omi app -> Settings -> Developer -> MCP -> Create Key.
     token: env('OMI_MCP_TOKEN', ''),
     enabled: enabled(env('ENABLE_OMI', 'true')),
-    // core (default): day review, summaries, conversations, memories, action items;
+    // core (default, read-only): summaries, conversations, memories, action items;
     // all: every tool the key allows; off: only the day summary in allglance_get_day.
     tools: env('OMI_TOOLS', 'core'),
   },
