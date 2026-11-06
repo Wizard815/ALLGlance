@@ -11,8 +11,7 @@
 // same at the time of writing.)
 //
 // The fix has to happen on the server both apps share. This renames such files,
-// in place, to the form the library accepts, derived from the envelope's own
-// emitted_at. The envelope content (including its event_id, encrypted or not) is
+// in place, to the form the library accepts (see conformingName for the timestamp). The envelope content (including its event_id, encrypted or not) is
 // untouched, so receivers de-duplicate by event_id exactly as before; verified
 // with the real apps that lastGLANCE then fetches, decrypts and logs the chore.
 //
@@ -29,9 +28,20 @@ const SKIP = /(-sync\.json|-people\.json|intents-encryption-salt\.json|glance-ev
 
 const compact = (iso) => new Date(iso).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
 
-export function conformingName(envelope) {
+// Receivers keep a polling cursor (a filename timestamp) and only look back one
+// hour behind it (lastGLANCE: CURSOR_LOOKBACK_MS). A recovered event stamped with
+// its original, older time could therefore fall behind a cursor that moved on
+// while this service was down, and be skipped forever. So: keep the event's own
+// time when it is fresh (natural ordering), otherwise stamp it with NOW so it is
+// always inside every receiver's window. The envelope (and its real timestamps)
+// is untouched; receivers still de-duplicate by event_id.
+export const FRESH_MS = 30 * 60 * 1000;
+
+export function conformingName(envelope, now = Date.now()) {
   const hex = createHash('sha256').update(String(envelope.event_id)).digest('hex').slice(0, 6);
-  return `${compact(envelope.emitted_at)}-${hex}.json`;
+  const emitted = Date.parse(envelope.emitted_at);
+  const stamp = now - emitted < FRESH_MS && emitted <= now + 60_000 ? envelope.emitted_at : new Date(now).toISOString();
+  return `${compact(stamp)}-${hex}.json`;
 }
 
 async function* eventDirs(root, depth = 0, maxDepth = 4) {
@@ -54,7 +64,7 @@ export async function normalizeOnce(root, { now = Date.now(), minAgeMs = 3000, l
         if (now - (await stat(path)).mtimeMs < minAgeMs) continue; // maybe still being written
         const env = JSON.parse(await readFile(path, 'utf8'));
         if (!env || typeof env.event_id !== 'string' || typeof env.emitted_at !== 'string' || Number.isNaN(Date.parse(env.emitted_at))) continue;
-        const to = conformingName(env);
+        const to = conformingName(env, now);
         if (names.has(to)) continue; // already normalized copy exists; leave both alone
         await rename(path, join(dir, to));
         log(`[events] renamed ${name} -> ${to}`);

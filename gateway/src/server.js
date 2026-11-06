@@ -7,6 +7,7 @@
 import express from 'express';
 import config, { enabledAdapters } from './config.js';
 import Gateway from './gateway.js';
+import { createCaldavProxy } from './caldavProxy.js';
 import { createMcpRouter } from './mcp/server.js';
 import DayglanceMcpClient from './transport/DayglanceMcpClient.js';
 
@@ -24,6 +25,12 @@ export function requireToken(token) {
 function buildServer() {
   const gateway = new Gateway();
   const app = express();
+  // CalDAV passes straight through to Vikunja BEFORE any body parsing or the
+  // gateway token check: CalDAV clients use Basic auth, which Vikunja validates.
+  if (config.vikunja.enabled && config.caldav.proxy) {
+    app.use(createCaldavProxy({ target: config.vikunja.url }));
+    console.log(`[gateway] CalDAV served at /dav (proxied to ${config.vikunja.url}/dav; clients log in with their Vikunja credentials)`);
+  }
   app.use(express.json({ limit: '5mb' }));
 
   // Wire dayGLANCE's transport onto its adapter.

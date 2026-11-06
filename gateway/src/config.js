@@ -65,6 +65,10 @@ export const config = {
     webUrl: env('LIFELANCE_WEB_URL', 'http://lifeglance:6868'),
     enabled: enabled(env('ENABLE_LIFELANCE', 'true')),
   },
+  // CalDAV front door: serve Vikunja's /dav through the gateway (ENABLE_CALDAV_PROXY=false to turn off).
+  caldav: {
+    proxy: enabled(env('ENABLE_CALDAV_PROXY', 'true')),
+  },
   // Shared WebDAV sync directory (the dayglance-sync service's data dir, mounted
   // read-only). Every GLANCE app syncs a snapshot file here; with the shared
   // sync passphrase the gateway reads lastGLANCE and lifeGLANCE (and could read
