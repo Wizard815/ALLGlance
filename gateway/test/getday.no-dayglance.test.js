@@ -7,7 +7,7 @@ import { equal, deepEqual } from 'node:assert/strict';
 
 process.env.ENABLE_DAYGLANCE = 'false';
 process.env.ENABLE_LASTGLANCE = 'false';
-process.env.ENABLE_LIFEGLANCE = 'false';
+process.env.ENABLE_LIFELANCE = 'false';
 process.env.ENABLE_OMI = 'false';
 const { Gateway } = await import('../src/gateway.js');
 
@@ -20,5 +20,13 @@ describe('allglance_get_day without dayGLANCE', () => {
     const day = await gw.getDay('2026-10-27');
     deepEqual(day.blocks, []);
     equal(day.unavailable, undefined, 'no adapter is not an unavailable adapter');
+  });
+
+  it('lists chores and milestones as empty lists when those apps are off', async () => {
+    const gw = new Gateway();
+    deepEqual(await gw.readChores(), []);
+    deepEqual(await gw.readMilestones(), []);
+    equal((await gw.listChores()).total, 0);
+    equal((await gw.listMilestones()).total, 0);
   });
 });
