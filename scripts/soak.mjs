@@ -3,6 +3,10 @@
 //
 //   GATEWAY_URL=http://<host>:8090 GATEWAY_TOKEN=<token> node scripts/soak.mjs
 //   SOAK_REQUESTS=60 SOAK_SECONDS=120 ...   for a quick check
+//   SOAK_CONCURRENCY=3                      parallel workers (default 1)
+//   SOAK_FULLSTACK=1 plus CALDAV_USER/CALDAV_PASSWORD, WEBDAV_USER/WEBDAV_PASSWORD, WEBDAV_URL:
+//     also drives CalDAV (/dav), the WebDAV sync server, direct Vikunja and the app pages,
+//     i.e. the whole stack, not only the MCP.
 //
 // It CREATES real tasks ("SOAK v n" in Vikunja, "SOAK dg n" in dayGLANCE) and marks
 // some done; delete them afterwards. Prints a latency summary; the full log goes to
@@ -11,6 +15,9 @@
 import { Client } from '../gateway/node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js';
 import { StreamableHTTPClientTransport } from '../gateway/node_modules/@modelcontextprotocol/sdk/dist/esm/client/streamableHttp.js';
 import { appendFileSync, writeFileSync, readFileSync } from 'node:fs';
+const CONC = Math.max(1, Number(process.env.SOAK_CONCURRENCY ?? 1)); const FULL = process.env.SOAK_FULLSTACK === '1';
+const DAVU = process.env.CALDAV_USER ?? '', DAVP = process.env.CALDAV_PASSWORD ?? '', WU = process.env.WEBDAV_USER ?? '', WP = process.env.WEBDAV_PASSWORD ?? '', WURL = (process.env.WEBDAV_URL ?? 'http://localhost:8091').replace(/\/$/, ''); const CALPROJ = process.env.CALDAV_PROJECT ?? '1';
+const basic = (u, p) => 'Basic ' + Buffer.from(`${u}:${p}`).toString('base64');
 const OUT = process.argv[2] ?? process.env.SOAK_LOG ?? './soak-requests.jsonl'; const TOTAL = Number(process.env.SOAK_REQUESTS ?? 500); const SECS = Number(process.env.SOAK_SECONDS ?? 3600);
 const BASE = (process.env.GATEWAY_URL ?? 'http://localhost:8090').replace(/\/$/, ''); const TOKEN = process.env.GATEWAY_TOKEN ?? '';
 if (!TOKEN) console.warn('GATEWAY_TOKEN not set: assuming the gateway is open');
@@ -37,18 +44,36 @@ const ACTIONS = [
   [6, 'create_dayglance', async () => { const t = await tool('allglance_create_task', pick([{ title: `SOAK dg ${++n}`, source: 'dayglance', priority: 2 }, { title: `SOAK dg ${++n}`, source: 'dayglance', start: `${day(Math.floor(rnd(1, 20)))} ${pick(['09:00', '11:30', '14:00', '16:45'])}`, duration_minutes: 30 }])); created.dayglance.push(JSON.parse(t).created.id); return t; }],
   [4, 'update', async () => { const src = pick(['vikunja', 'dayglance']); const ids = created[src]; if (!ids.length) return tool('allglance_get_day', {}); const id = ids[Math.floor(Math.random() * ids.length)]; return tool('allglance_update_task', { source: src, id: String(id), done: true }); }],
 ];
+let seq = 0; const mine = [];
+const dav = async (method, path, { user = DAVU, pass = DAVP, base = BASE, body, headers = {}, ok = [200, 201, 204, 207, 404] } = {}) => { const r = await fetch(base + path, { method, headers: { Authorization: basic(user, pass), ...headers }, body }); const t = await r.text(); if (!ok.includes(r.status)) throw new Error(`${method} ${path} -> ${r.status}`); return t; };
+const ics = (uid, summary) => `BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//soak//EN\r\nBEGIN:VTODO\r\nUID:${uid}\r\nDTSTAMP:20261106T000000Z\r\nSUMMARY:${summary}\r\nSTATUS:NEEDS-ACTION\r\nEND:VTODO\r\nEND:VCALENDAR\r\n`;
+if (FULL) ACTIONS.push(
+  [10, 'caldav_propfind', () => dav('PROPFIND', '/dav/projects', { headers: { Depth: '1', 'content-type': 'application/xml' }, body: '<d:propfind xmlns:d="DAV:"><d:prop><d:displayname/></d:prop></d:propfind>' })],
+  [8, 'caldav_get_calendar', () => dav('GET', `/dav/projects/${CALPROJ}`)],
+  [5, 'caldav_put_delete', async () => { const uid = `soak-${Date.now()}-${++seq}`; await dav('PUT', `/dav/projects/${CALPROJ}/${uid}.ics`, { headers: { 'content-type': 'text/calendar' }, body: ics(uid, `SOAK caldav ${seq}`) }); return dav('DELETE', `/dav/projects/${CALPROJ}/${uid}.ics`); }],
+  [8, 'webdav_put_get', async () => { const n = `soak-${Date.now()}-${++seq}.json`; await dav('MKCOL', '/soak-test/', { user: WU, pass: WP, base: WURL, ok: [201, 405, 200] }); await dav('PUT', `/soak-test/${n}`, { user: WU, pass: WP, base: WURL, body: JSON.stringify({ n, pad: 'x'.repeat(4000) }), headers: { 'content-type': 'application/json' } }); mine.push(n); return dav('GET', `/soak-test/${n}`, { user: WU, pass: WP, base: WURL }); }],
+  [4, 'webdav_propfind', () => dav('PROPFIND', '/', { user: WU, pass: WP, base: WURL, headers: { Depth: '1' } })],
+  [3, 'app_pages', async () => { for (const u of ['http://localhost:6767/', 'http://localhost:3000/', 'http://localhost:6868/']) { const r = await fetch(u); if (!r.ok) throw new Error(`${u} -> ${r.status}`); await r.text(); } }],
+  [4, 'big_list', () => tool('allglance_list_tasks', { limit: 200 })],
+);
 const total = ACTIONS.reduce((s, a) => s + a[0], 0);
 const chooseAction = () => { let r = Math.random() * total; for (const a of ACTIONS) { if ((r -= a[0]) < 0) return a; } return ACTIONS[0]; };
-// Jittered schedule that fits TOTAL requests into SECS.
-let gaps = Array.from({ length: TOTAL }, () => rnd(0.6, 1.4)); const k = SECS / gaps.reduce((a, b) => a + b, 0); gaps = gaps.map((g) => g * k);
-const t0 = Date.now(); let ok = 0, fail = 0;
-for (let i = 0; i < TOTAL; i++) {
-  await new Promise((r) => setTimeout(r, gaps[i] * 1000));
-  const [, name, fn] = chooseAction(); const s = Date.now();
-  try { await fn(); ok++; log({ i, t: Math.round((s - t0) / 1000), name, ms: Date.now() - s, ok: true }); }
-  catch (e) { fail++; log({ i, t: Math.round((s - t0) / 1000), name, ms: Date.now() - s, ok: false, err: String(e.message).slice(0, 200) }); }
+// CONC workers, each paced with jitter so that TOTAL requests fit into SECS overall.
+const t0 = Date.now(); let ok = 0, fail = 0, issued = 0;
+const meanGap = (SECS * CONC) / TOTAL;
+async function worker(w) {
+  while (issued < TOTAL) {
+    await new Promise((r) => setTimeout(r, meanGap * rnd(0.6, 1.4) * 1000));
+    if (issued >= TOTAL) break;
+    const i = issued++; const [, name, fn] = chooseAction(); const s0 = Date.now();
+    try { await fn(); ok++; log({ i, w, t: Math.round((s0 - t0) / 1000), name, ms: Date.now() - s0, ok: true }); }
+    catch (e) { fail++; log({ i, w, t: Math.round((s0 - t0) / 1000), name, ms: Date.now() - s0, ok: false, err: String(e.message).slice(0, 200) }); }
+  }
 }
-writeFileSync(OUT + '.summary', JSON.stringify({ requests: TOTAL, ok, fail, elapsedSec: Math.round((Date.now() - t0) / 1000), created }));
+await Promise.all(Array.from({ length: CONC }, (_, w) => worker(w)));
+if (FULL) for (const n of mine) { try { await dav('DELETE', `/soak-test/${n}`, { user: WU, pass: WP, base: WURL }); } catch {} }
+if (FULL) { try { await dav('DELETE', '/soak-test/', { user: WU, pass: WP, base: WURL }); } catch {} }
+writeFileSync(OUT + '.summary', JSON.stringify({ requests: issued, concurrency: CONC, ok, fail, elapsedSec: Math.round((Date.now() - t0) / 1000), created }));
 try { await client?.close(); } catch {}
 const lat = readFileSync(OUT, 'utf8').trim().split('\n').map((l) => JSON.parse(l).ms).sort((a, b) => a - b);
 const q = (p) => lat[Math.min(lat.length - 1, Math.floor(lat.length * p))];
