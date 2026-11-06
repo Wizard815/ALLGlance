@@ -65,6 +65,17 @@ export const config = {
     webUrl: env('LIFELANCE_WEB_URL', 'http://lifeglance:6868'),
     enabled: enabled(env('ENABLE_LIFELANCE', 'true')),
   },
+  // Omi (Wizard815/omi-local): the wearable's own MCP server, surfaced as omi_* tools and
+  // the day summary in allglance_get_day. Off until OMI_URL is set.
+  omi: {
+    url: env('OMI_URL', ''),
+    // An Omi MCP key (omi_mcp_...): Omi app -> Settings -> Developer -> MCP -> Create Key.
+    token: env('OMI_MCP_TOKEN', ''),
+    enabled: enabled(env('ENABLE_OMI', 'true')),
+    // core (default): day review, summaries, conversations, memories, action items;
+    // all: every tool the key allows; off: only the day summary in allglance_get_day.
+    tools: env('OMI_TOOLS', 'core'),
+  },
   // CalDAV front door: serve Vikunja's /dav through the gateway (ENABLE_CALDAV_PROXY=false to turn off).
   caldav: {
     proxy: enabled(env('ENABLE_CALDAV_PROXY', 'true')),
@@ -95,6 +106,7 @@ export function enabledAdapters() {
     dayglance: config.dayglance.enabled,
     lastglance: config.lastglance.enabled,
     lifeglance: config.lifeglance.enabled,
+    omi: config.omi.enabled && Boolean(config.omi.url),
   })
     .filter(([, v]) => v)
     .map(([name]) => name);

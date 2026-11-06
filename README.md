@@ -74,6 +74,7 @@ purpose so an agent can choose well.
 | `allglance_create_task` | New task: Vikunja (default) or dayGLANCE (scheduled or inbox) | Vikunja / dayGLANCE |
 | `allglance_update_task` | Done / rename / priority / due date / (dayGLANCE) schedule | Vikunja / dayGLANCE |
 | `vikunja_native_find_action` · `_do_action` · `_filter_syntax` | Anything else in Vikunja (labels, buckets, comments, filters) | Vikunja |
+| `omi_get_day_review` · `omi_get_conversations` · `omi_search_memories` · … | The wearable: what was said, remembered and decided (only with `OMI_URL` set; see `docs/integrations.md`) | Omi |
 
 Design choices: results are **compact** (no raw app records; `source` + `id` go
 straight into `allglance_update_task`), lists have **filters and a default limit**

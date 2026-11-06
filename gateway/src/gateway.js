@@ -10,6 +10,7 @@ import { VikunjaAdapter } from './adapters/VikunjaAdapter.js';
 import { DayglanceAdapter } from './adapters/DayglanceAdapter.js';
 import { LastglanceAdapter } from './adapters/LastglanceAdapter.js';
 import { LifeglanceAdapter } from './adapters/LifeglanceAdapter.js';
+import { OmiAdapter } from './adapters/OmiAdapter.js';
 
 /** `{ unavailable, note }` fields for a tool result, or nothing when all sources answered. */
 const unavailableNote = (list) => (list.length
@@ -39,6 +40,7 @@ export class Gateway {
       ['dayglance', DayglanceAdapter],
       ['lastglance', LastglanceAdapter],
       ['lifeglance', LifeglanceAdapter],
+      ['omi', OmiAdapter],
     ];
     for (const [name, Ctor] of registry) {
       try {
@@ -61,6 +63,11 @@ export class Gateway {
 
   has(name) {
     return this.#adapters.has(name);
+  }
+
+  /** One enabled adapter by source name, or undefined. */
+  adapter(name) {
+    return this.#adapters.get(name);
   }
 
   /** Read tasks across all sources, optionally scoped to an owner. */
@@ -195,9 +202,16 @@ export class Gateway {
     const overdue = all.filter((t) => !t.completed && t.due_date && t.due_date < date).length;
     tasks.sort(byDue);
     const ordered = [...blocks].sort((a, b) => String(a.start_time ?? '').localeCompare(String(b.start_time ?? '')));
+    // Omi's day bundle, when the wearable is wired in: the day in words next to the day in tasks.
+    let omi;
+    const omiAdapter = this.adapter('omi');
+    if (omiAdapter) {
+      try { omi = await omiAdapter.daySummary(date); } catch { unavailable.push('omi'); }
+    }
     return {
       date, blocks: ordered.map(compactBlock), tasks: tasks.map(compactTask), overdue_count: overdue,
-      ...unavailableNote(unavailable.filter((u) => ['vikunja', 'dayglance'].includes(u))),
+      ...(omiAdapter ? { omi_day_summary: omi ?? null } : {}),
+      ...unavailableNote(unavailable.filter((u) => ['vikunja', 'dayglance', 'omi'].includes(u))),
     };
   }
 

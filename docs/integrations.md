@@ -29,30 +29,40 @@ Notes for Orb's docs/config (its repo is separate and was only read):
   gateway: `POST /mcp` tools `allglance_create_task` / `allglance_update_task` with
   `source: "dayglance"`. Orb has no tool for it yet.
 
-## Omi (Wizard815/omi-local): CalDAV works for tasks; one catch; two further options
+## Omi (Wizard815/omi-local): wired both ways
 
-`omi-local` is a self-hosted Omi (backend, Firestore emulator, local STT/LLM). Its
-latest commit added a CalDAV page (server URL, login, per-direction switches, test,
-sync). Omi's own CalDAV client (`backend/utils/caldav/client.py`) was run against
-`/dav/`: principal discovery, calendar home, listing, query, create, complete and
-delete of VTODOs all work, so Omi action items can sync to Vikunja tasks (both ways).
+`omi-local` is a self-hosted Omi (backend, Firestore emulator, local STT/LLM). Omi and
+AllGLANCE now meet in three places; each is one setting on one side.
 
-**The catch.** Omi's sync always resolves an *events* calendar first
-(`ensure_calendars`). Vikunja only has task lists, so with no events calendar chosen
-Omi tries `MKCALENDAR` and Vikunja answers 404, failing the whole sync (even for tasks
-only). Either save the same list as both the tasks and calendar href while keeping all
-event switches off, or (better, in omi-local) only resolve the events calendar when an
-event direction is enabled. Omi also talks to ONE CalDAV server per user, so Vikunja
-(tasks) and its bundled Radicale (events) cannot both be used at once.
+| Direction | What moves | Set on | How |
+|---|---|---|---|
+| Omi → Vikunja (CalDAV) | action items as VTODOs, both ways: a task ticked in Vikunja completes in Omi, a task created in Vikunja becomes an Omi action item | omi-host `.env`: `CALDAV_DEFAULT_URL=http://<host>:8090/dav/`, `CALDAV_USER` / `CALDAV_PASSWORD` = a Vikunja login or CalDAV token | Omi's hourly sync (`backend/utils/caldav/sync.py`) against the gateway's `/dav` |
+| Omi → gateway (MCP + REST) | Omi's assistant gets the `allglance_*` tools (what's on today, chores, milestones, create a task); new Omi action items are created in Vikunja at once | omi-host `.env`: `ALLGLANCE_URL=http://<host>:8090`, `ALLGLANCE_TOKEN=<GATEWAY_TOKEN>` | Omi seeds a private "ALLGlance" chat app from the gateway's `/mcp` and an `allglance` task integration (`backend/utils/allglance.py`); the same can be done by hand with `POST /v1/apps/mcp` (now takes `access_token`) |
+| Gateway → Omi (MCP) | Omi's tools appear here as `omi_*` (day review, conversations, memories, action items), and `allglance_get_day` carries `omi_day_summary` | `.env.allglance`: `OMI_URL=http://<host>:8000`, `OMI_MCP_TOKEN=omi_mcp_…` | `gateway/src/adapters/OmiAdapter.js`, a passthrough of Omi's Streamable HTTP MCP at `/v1/mcp` |
 
-**Other options (not built):**
-1. *Omi asks AllGLANCE:* Omi's assistant has a tool framework
-   (`backend/utils/retrieval/tools/`) but no MCP client. A small `allglance_tools.py`
-   calling the gateway REST would let it answer "what's on my day / which chores are
-   overdue" and create tasks.
-2. *AllGLANCE asks Omi:* Omi ships its own MCP server (`mcp/`, API-key based). The
-   gateway already surfaces Vikunja's MCP as `vikunja_native_*`; the same mechanism
-   could surface Omi's tools so one endpoint covers memories and conversations too.
+**The CalDAV catch is fixed in omi-local.** Omi's sync used to resolve an *events*
+calendar first and fail the whole sync when Vikunja (task lists only) answered 404 to
+`MKCALENDAR`. It now looks for an events calendar only when an event direction is on, and
+when the server has none it syncs the tasks and reports, in the app's last sync report:
+"This server only has task lists (no events calendar) …". Day summaries and conversation
+events therefore do not reach Vikunja over CalDAV; the day summary reaches AllGLANCE
+through `omi_get_day_review` / `allglance_get_day` instead. Omi still talks to one CalDAV
+server per user, so choose: Vikunja through the gateway (tasks shared with the family) or
+Omi's bundled Radicale (tasks and events, Omi only).
+
+**Omi's MCP tools surfaced here.** `OMI_TOOLS=core` (default) exposes `get_day_review`,
+`get_daily_summaries`, `get_conversations`, `search_conversations`, `get_memories`,
+`search_memories`, `get_action_items`, `create_action_item` and `complete_action_item`;
+`all` exposes every tool the key allows; `off` keeps only the day summary in
+`allglance_get_day`. The key's scopes (set when creating it in Omi) still apply. Omi's
+action items are not listed as a task source here: they already reach Vikunja through
+CalDAV or the task integration, so a second listing would show every task twice.
+
+**Checked without a phone.** The adapter is covered by `gateway/test/omi.adapter.test.js`
+against a fake Omi MCP; the Omi side by its unit tests (`tests/unit/test_caldav_sync.py`
+tasks-only cases, `test_allglance.py`, `test_mcp_day_review_tool.py`). Not yet run against
+a live Omi and a live gateway together.
 
 Network note: omi-host runs as its own compose project, so point it at the gateway by
-host address (`http://<host>:8090/dav/`), not a container name.
+host address (`http://<host>:8090/…`), not a container name, and point the gateway at
+Omi the same way (`OMI_URL=http://<host>:8000`).
