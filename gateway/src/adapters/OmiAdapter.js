@@ -16,15 +16,12 @@ const PREFIX = 'omi_';
 const TOOLS_TTL_MS = 5 * 60 * 1000;
 // The everyday set. OMI_TOOLS=all exposes every tool Omi's key allows.
 const CORE_TOOLS = new Set([
-  'get_day_review',
   'get_daily_summaries',
   'get_conversations',
   'search_conversations',
   'get_memories',
   'search_memories',
   'get_action_items',
-  'create_action_item',
-  'complete_action_item',
 ]);
 
 const ONE_LINE = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
@@ -80,20 +77,24 @@ export class OmiAdapter extends BaseAdapter {
   }
 
   /**
-   * The day bundle for one date, compact, for allglance_get_day: null when Omi has
-   * not bundled that day yet. Throws when Omi cannot be reached (the caller marks it unavailable).
+   * Omi's own summary of one date (its get_daily_summaries tool), compact, for
+   * allglance_get_day: null when Omi has no summary for that day yet. Throws when
+   * Omi cannot be reached (the caller marks it unavailable).
    */
   async daySummary(date) {
-    const out = await this.#client.callTool('get_day_review', { date });
+    const out = await this.#client.callTool('get_daily_summaries', { start_date: date, end_date: date, limit: 1 });
     const payload = out?.structuredContent ?? parseText(out);
-    if (!payload || payload.bundled === false || !payload.review) return null;
-    const r = payload.review;
+    const list = Array.isArray(payload) ? payload : payload?.daily_summaries;
+    const r = Array.isArray(list) ? list.find((x) => x && (!x.date || x.date === date)) : null;
+    if (!r) return null;
+    const texts = (arr, key) => (Array.isArray(arr) ? arr.map((x) => x?.[key]).filter(Boolean) : []);
     return {
-      title: r.title ?? '',
-      text: r.text ?? '',
-      tags: Array.isArray(r.tags) ? r.tags : [],
-      sections: (r.sections ?? []).map((s) => ({ title: s.title ?? '', tags: s.tags ?? [], favorited: Boolean(s.favorited) })),
-      conversations: Array.isArray(payload.conversations) ? payload.conversations.length : undefined,
+      headline: r.headline ?? '',
+      overview: r.overview ?? '',
+      highlights: (Array.isArray(r.highlights) ? r.highlights : []).map((h) => h.topic ?? h.summary).filter(Boolean),
+      decisions: texts(r.decisions_made, 'decision'),
+      open_questions: texts(r.unresolved_questions, 'question'),
+      conversations: r.stats?.total_conversations,
     };
   }
 

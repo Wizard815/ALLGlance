@@ -46,21 +46,22 @@ calendar first and fail the whole sync when Vikunja (task lists only) answered 4
 when the server has none it syncs the tasks and reports, in the app's last sync report:
 "This server only has task lists (no events calendar) …". Day summaries and conversation
 events therefore do not reach Vikunja over CalDAV; the day summary reaches AllGLANCE
-through `omi_get_day_review` / `allglance_get_day` instead. Omi still talks to one CalDAV
+through `omi_get_daily_summaries` / `allglance_get_day` (`omi_day_summary`) instead. Omi still talks to one CalDAV
 server per user, so choose: Vikunja through the gateway (tasks shared with the family) or
 Omi's bundled Radicale (tasks and events, Omi only).
 
-**Omi's MCP tools surfaced here.** `OMI_TOOLS=core` (default) exposes `get_day_review`,
+**Omi's MCP tools surfaced here.** `OMI_TOOLS=core` (default) exposes
 `get_daily_summaries`, `get_conversations`, `search_conversations`, `get_memories`,
-`search_memories`, `get_action_items`, `create_action_item` and `complete_action_item`;
-`all` exposes every tool the key allows; `off` keeps only the day summary in
+`search_memories` and `get_action_items` (reads only: creating or completing tasks goes
+through CalDAV / Vikunja, so there is one place to write them);
+`all` exposes every tool the key allows, writes included; `off` keeps only the day summary in
 `allglance_get_day`. The key's scopes (set when creating it in Omi) still apply. Omi's
 action items are not listed as a task source here: they already reach Vikunja through
 CalDAV or the task integration, so a second listing would show every task twice.
 
 **Checked without a phone.** The adapter is covered by `gateway/test/omi.adapter.test.js`
 against a fake Omi MCP; the Omi side by its unit tests (`tests/unit/test_caldav_sync.py`
-tasks-only cases, `test_allglance.py`, `test_mcp_day_review_tool.py`). Not yet run against
+tasks-only cases, `test_allglance.py`). Not yet run against
 a live Omi and a live gateway together.
 
 Network note: omi-host runs as its own compose project, so point it at the gateway by
