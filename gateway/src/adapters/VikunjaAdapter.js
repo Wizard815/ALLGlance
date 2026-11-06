@@ -246,6 +246,12 @@ export class VikunjaAdapter extends BaseAdapter {
     try {
       data = await fetchJson(url, { method: 'PATCH', headers: { ...this.#auth(), 'content-type': 'application/merge-patch+json' }, body, timeoutMs: 10000 });
     } catch (err) {
+      // A no-op update (e.g. marking an already-done task done) answers 304 Not
+      // Modified: the task is already as asked, so that is success. Read it back.
+      if (/ -> 304 /.test(err.message)) {
+        data = await fetchJson(url, { headers: this.#auth(), timeoutMs: 10000 });
+        return taskOf('vikunja', { ...(data ?? {}), id: data?.id ?? taskId }, null);
+      }
       if (!/-> (405|404|415) /.test(err.message)) throw err;
       const current = await fetchJson(url, { headers: this.#auth(), timeoutMs: 10000 });
       data = await fetchJson(url, { method: 'PUT', headers: this.#auth(), body: { ...current, ...body }, timeoutMs: 10000 });
