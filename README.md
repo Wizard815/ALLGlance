@@ -385,6 +385,32 @@ the submodule to the new tag, bump the matching image tag, and (dayglance only)
 re-run `node gateway/container-mcp/scripts/vendor-model.mjs`. AllGLANCE's own
 work lives under `gateway/`.
 
+## Resource use and load (measured)
+
+Whole stack (7 containers: dayGLANCE, lastGLANCE, lifeGLANCE, Vikunja, the gateway,
+dayglance-mcp, the WebDAV sync server), measured on a 4-core / 16 GB host:
+
+| | |
+|---|---|
+| Idle memory | about 350-380 MiB total (gateway ~145, Vikunja ~85-110, dayglance-mcp ~60, the rest 2-30 each) |
+| Memory under load | peaked at about 417 MiB over an hour; gateway and Vikunja levelled off, dayglance-mcp grew a few MiB/hour |
+| CPU | well under 1% average per container; short bursts to 10-20% on writes |
+| Disk | tiny: sync file 16 to 31 KB and the Vikunja DB 0.8 MB after an hour of writes |
+
+One-hour soak (`scripts/soak.mjs`): 500 requests (reads, writes, updates, REST and MCP, plus
+a dayGLANCE app session writing mid-run). **500/500 succeeded**, p50 94 ms, p95 285 ms,
+p99 432 ms, max 1.0 s (dayGLANCE writes are the slowest, p50 about 280 ms), no latency
+drift between the first and last third, no restarts, no errors in any container log,
+no lost or duplicated tasks. One hour cannot rule out a leak of a few MiB per hour; the
+gateway and Vikunja plateaued, dayglance-mcp is the one to watch on a long run.
+
+Re-run it against your own server (it creates real "SOAK ..." tasks; delete them afterwards):
+
+```bash
+GATEWAY_URL=http://<host>:8090 GATEWAY_TOKEN=<token> node scripts/soak.mjs
+SOAK_REQUESTS=60 SOAK_SECONDS=120 GATEWAY_URL=... node scripts/soak.mjs   # quick check
+```
+
 ## Upkeep
 
 Nothing is forked, so upkeep is: move the pins, re-vendor, re-test.
