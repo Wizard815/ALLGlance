@@ -21,7 +21,13 @@ const SUMMARY = {
   }],
 };
 
-function fakeOmi() {
+const DAY_REVIEW = {
+  date: '2026-10-27', bundled: true, conversations: [{ id: 'c1' }, { id: 'c2' }, { id: 'c3' }],
+  review: { title: 'A build fixed, a flat found', text: 'At 09:02 you found the build break.', tags: ['build', 'flat'],
+    sections: [{ id: 's1', title: 'Build break', tags: ['build'], favorited: false }, { id: 's2', title: 'Flat', tags: ['flat'], favorited: true }] },
+};
+
+function fakeOmi({ dayReview = false } = {}) {
   const calls = [];
   const srv = http.createServer((req, res) => {
     let body = '';
@@ -33,7 +39,11 @@ function fakeOmi() {
       const msg = JSON.parse(body || '{}');
       calls.push([msg.method, msg.params?.name, msg.params?.arguments]);
       if (msg.method === 'notifications/initialized') { res.statusCode = 202; res.end(); return; }
-      const result = msg.method === 'tools/list' ? { tools: TOOLS }
+      const tools = dayReview ? [{ name: 'get_day_review', description: 'The bundled day.', inputSchema: { type: 'object', properties: { date: { type: 'string' } } } }, ...TOOLS] : TOOLS;
+      const text = (o) => ({ content: [{ type: 'text', text: JSON.stringify(o) }] });
+      const result = msg.method === 'tools/list' ? { tools }
+        : msg.method === 'tools/call' && msg.params.name === 'get_day_review'
+          ? text(msg.params.arguments?.date === '2026-10-27' ? DAY_REVIEW : { date: msg.params.arguments?.date, bundled: false, review: null, conversations: [] })
         : msg.method === 'tools/call' ? (msg.params.arguments?.start_date === '2026-10-28'
           ? { content: [{ type: 'text', text: JSON.stringify({ daily_summaries: [] }) }] }
           : { content: [{ type: 'text', text: JSON.stringify(SUMMARY) }] })
@@ -88,6 +98,26 @@ describe('omi adapter', () => {
     equal(live.ok, true); equal(live.mcpTools, 2);
     const dead = await new OmiAdapter({ config: cfgFor('http://127.0.0.1:9'), roster: new Roster() }).status();
     equal(dead.ok, false);
+  });
+
+  it('prefers omi-local\'s get_day_review when the key lists it, and falls back to the daily summary for an unbundled day', async () => {
+    const omiLocal = await fakeOmi({ dayReview: true });
+    try {
+      const a = new OmiAdapter({ config: cfgFor(omiLocal.url), roster: new Roster() });
+      ok((await a.dynamicTools()).some((t) => t.name === 'omi_get_day_review'), 'read-only, so a core tool');
+      const day = await a.daySummary('2026-10-27');
+      equal(day.source, 'day_review');
+      equal(day.headline, 'A build fixed, a flat found');
+      equal(day.overview, 'At 09:02 you found the build break.');
+      deepEqual(day.tags, ['build', 'flat']);
+      deepEqual(day.sections.map((s) => s.favorited), [false, true]);
+      equal(day.conversations, 3);
+      // 2026-10-28 is not bundled: the classic daily summary answers (empty here -> null), not an error
+      equal(await a.daySummary('2026-10-28'), null);
+      ok(omiLocal.calls.some(([m, name, args]) => m === 'tools/call' && name === 'get_daily_summaries' && args.start_date === '2026-10-28'));
+    } finally {
+      omiLocal.srv.close();
+    }
   });
 
   it('allglance_get_day carries omi_day_summary, and marks Omi unavailable when it cannot answer', async () => {
