@@ -105,8 +105,12 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- helpers -------------------------------------------------------------------------
     def body(self):
-        n = int(self.headers.get('Content-Length') or 0)
-        return self.rfile.read(n) if n else b''
+        # Read once per request, whatever the handler does with it: on a keep-alive connection an
+        # unread body would be parsed as the next request line (a 400 "Bad request syntax").
+        if not hasattr(self, '_body'):
+            n = int(self.headers.get('Content-Length') or 0)
+            self._body = self.rfile.read(n) if n else b''
+        return self._body
 
     def send(self, status, payload=b'', ctype='application/json', extra=None):
         if isinstance(payload, (dict, list)):
@@ -116,6 +120,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header('Content-Type', ctype)
         self.send_header('Content-Length', str(len(payload)))
+        # One request per connection: keep-alive is not what this stand-in is for, and a
+        # proxied client that pipelines would otherwise trip the stdlib parser.
+        self.send_header('Connection', 'close')
+        self.close_connection = True
         for k, v in (extra or {}).items():
             self.send_header(k, v)
         self.end_headers()
@@ -164,6 +172,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send(200, b'', 'text/plain', {'DAV': '1, 3, calendar-access', 'Allow': 'OPTIONS, GET, PUT, DELETE, PROPFIND, REPORT'})
 
     def route(self):
+        self.body()
         path = urlparse(self.path).path
         if path == '/health':
             return self.send(200, 'OK', 'text/plain')
@@ -211,6 +220,9 @@ class Handler(BaseHTTPRequestHandler):
                         t[k] = data[k]
                 if 'done' in data:
                     t['done_at'] = now_iso() if data['done'] else ZERO
+                # A REST edit changes the calendar object too: re-render it from the task.
+                t.pop('_ics', None)
+                t['_etag'] = (t.get('_etag', 0) or 0) + 1
                 return self.send(200, rest_task(t))
             if re.fullmatch(r'/api/v2/tasks/\d+/assignees', path):
                 return self.send(201, {})

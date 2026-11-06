@@ -98,7 +98,7 @@ export class Gateway {
   /** Read the day's time blocks (dayGLANCE) for one date, optionally scoped. */
   async readBlocks(date, owner = null) {
     const adapter = this.#adapters.get('dayglance');
-    if (!adapter) return { blocks: [] };
+    if (!adapter) return [];
     const res = await adapter.readBlocks(date, owner);
     return res.blocks ?? [];
   }
