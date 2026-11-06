@@ -228,3 +228,20 @@ describe('dayGLANCE reads cover every scheduled day', () => {
     deepEqual((await adapter.readTasks()).tasks, []);
   });
 });
+
+describe('idempotent updates', () => {
+  it('re-applying an update that changes nothing (Vikunja answers 304) is success, not an error', async () => {
+    const json = (o) => new Response(JSON.stringify(o), { headers: { 'content-type': 'application/json' } });
+    const calls = [];
+    globalThis.fetch = async (url, init = {}) => {
+      calls.push(`${init.method ?? 'GET'} ${new URL(url).pathname}`);
+      if (init.method === 'PATCH') return new Response(null, { status: 304, statusText: 'Not Modified' });
+      return json({ id: 7, title: 'Already done', done: true });
+    };
+    const a = new VikunjaAdapter({ roster: new Roster(), config: { vikunja: { enabled: true, url: 'http://v', token: 't', mcp: { enabled: false } }, playwright: {} } });
+    const t = await a.updateTask(7, { done: true });
+    equal(t.completed, true);
+    equal(t.title, 'Already done');
+    deepEqual(calls, ['PATCH /api/v2/tasks/7', 'GET /api/v2/tasks/7']);
+  });
+});

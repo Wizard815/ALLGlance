@@ -15,6 +15,7 @@
 import { Client } from '../gateway/node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js';
 import { StreamableHTTPClientTransport } from '../gateway/node_modules/@modelcontextprotocol/sdk/dist/esm/client/streamableHttp.js';
 import { appendFileSync, writeFileSync, readFileSync } from 'node:fs';
+import { AsyncLocalStorage } from 'node:async_hooks';
 const CONC = Math.max(1, Number(process.env.SOAK_CONCURRENCY ?? 1)); const FULL = process.env.SOAK_FULLSTACK === '1';
 const DAVU = process.env.CALDAV_USER ?? '', DAVP = process.env.CALDAV_PASSWORD ?? '', WU = process.env.WEBDAV_USER ?? '', WP = process.env.WEBDAV_PASSWORD ?? '', WURL = (process.env.WEBDAV_URL ?? 'http://localhost:8091').replace(/\/$/, ''); const CALPROJ = process.env.CALDAV_PROJECT ?? '1';
 const basic = (u, p) => 'Basic ' + Buffer.from(`${u}:${p}`).toString('base64');
@@ -22,12 +23,13 @@ const OUT = process.argv[2] ?? process.env.SOAK_LOG ?? './soak-requests.jsonl'; 
 const BASE = (process.env.GATEWAY_URL ?? 'http://localhost:8090').replace(/\/$/, ''); const TOKEN = process.env.GATEWAY_TOKEN ?? '';
 if (!TOKEN) console.warn('GATEWAY_TOKEN not set: assuming the gateway is open');
 const rnd = (a, b) => a + Math.random() * (b - a); const pick = (a) => a[Math.floor(Math.random() * a.length)];
-let client = null, calls = 0;
-const connect = async () => { try { await client?.close(); } catch {} client = new Client({ name: 'soak', version: '1' }); await client.connect(new StreamableHTTPClientTransport(new URL(BASE + '/mcp'), { requestInit: { headers: TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {} } })); calls = 0; };
+// One MCP client per worker: a worker reconnecting must never cut off another one's in-flight call.
+const als = new AsyncLocalStorage(); const clients = new Map();
+const connect = async (w) => { const old = clients.get(w)?.client; try { await old?.close(); } catch {} const c = new Client({ name: `soak-${w}`, version: '1' }); await c.connect(new StreamableHTTPClientTransport(new URL(BASE + '/mcp'), { requestInit: { headers: TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {} } })); clients.set(w, { client: c, calls: 0 }); return c; };
 const day = (off) => new Date(Date.now() + off * 864e5).toLocaleDateString('en-CA');
 const created = { vikunja: [], dayglance: [] }; let n = 0;
 const log = (o) => appendFileSync(OUT, JSON.stringify(o) + '\n');
-const tool = async (name, args) => { if (!client || calls++ > 40) await connect(); const r = await client.callTool({ name, arguments: args }); const text = r.content?.[0]?.text ?? ''; if (r.isError) throw new Error(text.slice(0, 160)); return text; };
+const tool = async (name, args) => { const w = als.getStore() ?? 0; let e = clients.get(w); if (!e || e.calls++ > 40) { await connect(w); e = clients.get(w); } const r = await e.client.callTool({ name, arguments: args }); const text = r.content?.[0]?.text ?? ''; if (r.isError) throw new Error(text.slice(0, 160)); return text; };
 const rest = async (path, method = 'GET', body) => { const r = await fetch(BASE + path, { method, headers: { ...(TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {}), 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }); const t = await r.text(); if (!r.ok && path !== '/health') throw new Error(`${r.status} ${t.slice(0, 120)}`); return t; };
 const ACTIONS = [
   [25, 'get_day', () => tool('allglance_get_day', { date: day(Math.floor(rnd(-2, 14))) })],
@@ -66,7 +68,7 @@ async function worker(w) {
     await new Promise((r) => setTimeout(r, meanGap * rnd(0.6, 1.4) * 1000));
     if (issued >= TOTAL) break;
     const i = issued++; const [, name, fn] = chooseAction(); const s0 = Date.now();
-    try { await fn(); ok++; log({ i, w, t: Math.round((s0 - t0) / 1000), name, ms: Date.now() - s0, ok: true }); }
+    try { await als.run(w, fn); ok++; log({ i, w, t: Math.round((s0 - t0) / 1000), name, ms: Date.now() - s0, ok: true }); }
     catch (e) { fail++; log({ i, w, t: Math.round((s0 - t0) / 1000), name, ms: Date.now() - s0, ok: false, err: String(e.message).slice(0, 200) }); }
   }
 }
@@ -74,7 +76,7 @@ await Promise.all(Array.from({ length: CONC }, (_, w) => worker(w)));
 if (FULL) for (const n of mine) { try { await dav('DELETE', `/soak-test/${n}`, { user: WU, pass: WP, base: WURL }); } catch {} }
 if (FULL) { try { await dav('DELETE', '/soak-test/', { user: WU, pass: WP, base: WURL }); } catch {} }
 writeFileSync(OUT + '.summary', JSON.stringify({ requests: issued, concurrency: CONC, ok, fail, elapsedSec: Math.round((Date.now() - t0) / 1000), created }));
-try { await client?.close(); } catch {}
+for (const { client } of clients.values()) { try { await client.close(); } catch {} }
 const lat = readFileSync(OUT, 'utf8').trim().split('\n').map((l) => JSON.parse(l).ms).sort((a, b) => a - b);
 const q = (p) => lat[Math.min(lat.length - 1, Math.floor(lat.length * p))];
 console.log('SOAK DONE', JSON.stringify({ ok, fail, elapsedSec: Math.round((Date.now() - t0) / 1000), p50_ms: q(0.5), p95_ms: q(0.95), max_ms: lat.at(-1) }));
