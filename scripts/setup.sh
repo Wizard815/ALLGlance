@@ -130,7 +130,8 @@ AllGLANCE is running.
 
  3. Open the apps:  dayGLANCE :6767   lastGLANCE :3000   lifeGLANCE :6868   Vikunja :3457
       Vikunja login  $(get VIKUNJA_BOOTSTRAP_USER) / $(get VIKUNJA_BOOTSTRAP_PASSWORD)
-      CalDAV (tasks) http://$HOST:3457/dav/  with that login
+      CalDAV (tasks) http://$HOST:8090/dav/  with that login (the gateway serves it; Home
+                     Assistant, phones and calendar apps all point here)
 
 Secrets are in $ENV_FILE (mode 600, never committed).
 EOF

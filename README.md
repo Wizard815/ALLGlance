@@ -100,10 +100,18 @@ Vikunja action your token allows. The native tools are Vikunja's own and are
 (`scripts/setup.sh` creates one). Without it, or on Vikunja older than 2.7, they
 simply don't appear. Switch off with `ENABLE_VIKUNJA_MCP=false`.
 
-**CalDAV is separate.** Tasks are also served over CalDAV by Vikunja itself
-(`http://<host>:3457/dav/`, tasks only) for CalDAV apps and Home Assistant's
-calendar integration. That is a different protocol on Vikunja's own port, not
-part of the gateway. Agents use the single MCP/REST endpoint above.
+**CalDAV: the gateway is the front door for it too.** Point calendar apps, phones
+and Home Assistant at `http://<host>:8090/dav/` (or just `http://<host>:8090`; the
+gateway answers `/.well-known/caldav` and a root `PROPFIND` with a redirect to
+`/dav/`). The gateway forwards CalDAV to Vikunja unchanged, so Vikunja is still
+the CalDAV server (tasks only, one calendar per project) and still does the login:
+clients use their **Vikunja username and password, or a Vikunja CalDAV token**
+(Settings -> CalDAV; better than your account password for phones and Home
+Assistant). The gateway's `GATEWAY_TOKEN` is for MCP/REST and does not apply to
+CalDAV (clients use Basic auth). Only `/dav` is forwarded; Vikunja's REST API and
+web UI are not exposed through the gateway. Turn it off with
+`ENABLE_CALDAV_PROXY=false`. Put TLS in front (a reverse proxy) for anything beyond
+your LAN: Basic auth is only as private as the connection.
 
 **`dayglance-mcp`** exposes dayGLANCE's full native tool set to the gateway:
 
@@ -315,8 +323,9 @@ once upstream fixes `useNotifyEmitter.js`.
 
 Verified against a live Vikunja v2.7.1:
 
-- **CalDAV (tasks):** Vikunja serves tasks as VTODO at `http://<host>:3457/dav/`
-  (basic auth with your Vikunja user). A task created through the gateway
+- **CalDAV (tasks):** the gateway serves Vikunja's tasks as VTODO at
+  `http://<host>:8090/dav/` (Basic auth with your Vikunja user; Vikunja itself is
+  also at `:3457/dav/`). A task created through the gateway
   appears there as a VTODO with its due date, so any CalDAV tasks client
   (Tasks.org, Apple Reminders, Thunderbird, Home Assistant's CalDAV
   integration) can read and edit it.
@@ -330,11 +339,11 @@ Verified against a live Vikunja v2.7.1:
 
 ### Home Assistant (verified)
 
-Home Assistant's built-in **CalDAV** integration, pointed at
-`http://<host>:3457/dav/` with the Vikunja login, creates one to-do list per
+Home Assistant's built-in **CalDAV** integration, pointed at the gateway,
+`http://<host>:8090/dav/`, with the Vikunja login, creates one to-do list per
 Vikunja project. Tested with a real Home Assistant: it lists the tasks; an item
 added or completed in Home Assistant appears in the gateway; a task created
-through the agent appears in Home Assistant (after its next poll). Priorities are
+through the agent appears in Home Assistant (verified through the gateway's `/dav`) (after its next poll). Priorities are
 not shown in Home Assistant's to-do UI.
 
 ## Unraid / appdata layout
