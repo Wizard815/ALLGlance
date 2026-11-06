@@ -197,9 +197,10 @@ export class VikunjaAdapter extends BaseAdapter {
     return projects[0].id;
   }
 
-  async writeTask({ title, due_date, owner_id, project_id, project, priority }) {
+  async writeTask({ title, due_date, owner_id, project_id, project, priority, notes }) {
     const resolved = await this.#resolveProject(project ?? project_id);
     const payload = { title };
+    if (notes) payload.description = String(notes);
     if (priority !== undefined) payload.priority = toPriority(priority);
     // Task fields are `due_date` (RFC3339); a bare YYYY-MM-DD is promoted to UTC midnight.
     if (due_date) payload.due_date = /^\d{4}-\d{2}-\d{2}$/.test(due_date) ? `${due_date}T00:00:00Z` : due_date;

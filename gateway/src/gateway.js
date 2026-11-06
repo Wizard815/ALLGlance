@@ -106,14 +106,14 @@ export class Gateway {
   /** Read milestones (lifeGLANCE), optionally scoped. */
   async readMilestones(owner = null) {
     const adapter = this.#adapters.get('lifeglance');
-    if (!adapter) return { milestones: [] };
+    if (!adapter) return [];
     return (await adapter.readMilestones(owner)).milestones ?? [];
   }
 
   /** Read recent chores (lastGLANCE), optionally scoped. */
   async readChores(owner = null) {
     const adapter = this.#adapters.get('lastglance');
-    if (!adapter) return { chores: [] };
+    if (!adapter) return [];
     return (await adapter.readChores(owner)).chores ?? [];
   }
 

@@ -53,6 +53,13 @@ test('writeTask posts to the project route with due_date, then assigns', async (
   assert.equal(t.title, 'x');
 });
 
+test('writeTask carries notes as the Vikunja description (Omi action items send them)', async () => {
+  const bodies = [];
+  stubFetch((u, init) => { bodies.push(init.body); return { id: 5, title: 'x' }; }, []);
+  await adapter().writeTask({ title: 'x', notes: 'call the dentist', project_id: 3 });
+  assert.equal(JSON.parse(bodies[0]).description, 'call the dentist');
+});
+
 test('status checks /health then an authenticated read', async () => {
   const calls = [];
   stubFetch(() => ({ items: [] }), calls);

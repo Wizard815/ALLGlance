@@ -78,3 +78,10 @@ gateway's `/dav/`: tasks created in Omi appear as its REST tasks and tasks creat
 `POST /api/allglance/tasks` reach Omi on its next sync pass. A week-long synthetic run against it
 (seven bundled days, 21 Omi tasks pushed, two Vikunja tasks pulled, one completed each way,
 `allglance_get_day` with Omi's summary) is how this integration was exercised.
+
+**Omi and calendars.** Omi extracts events from conversations (title, start, duration; the app lets you
+confirm each one) and can read a calendar (Google Calendar, the phone's, or a CalDAV events calendar).
+Its chat tool for *creating* events only writes to Google Calendar, and its CalDAV event push needs an
+events calendar, which Vikunja does not have. With the ALLGlance chat app enabled, "put the dentist on
+Thursday at 3" can instead go to dayGLANCE through `allglance_create_task` (`source: dayglance`, `start`),
+which is the family calendar in this stack and shows up in `allglance_get_day`.

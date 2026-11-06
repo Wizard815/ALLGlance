@@ -121,7 +121,7 @@ export function buildTools(gw) {
           start: { type: 'string', description: 'dayGLANCE: "YYYY-MM-DD HH:MM" to schedule it on the calendar (or "YYYY-MM-DD" with all_day).' },
           duration_minutes: { type: 'integer', description: 'dayGLANCE: length when scheduled. Default 30.' },
           all_day: { type: 'boolean', description: 'dayGLANCE: an all-day item (start is then just the date).' },
-          notes: { type: 'string', description: 'dayGLANCE: free-text notes.' },
+          notes: { type: 'string', description: 'Free-text notes: the Vikunja task description, or the dayGLANCE notes.' },
         },
         required: ['title'],
       },
