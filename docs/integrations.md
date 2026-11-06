@@ -46,12 +46,14 @@ calendar first and fail the whole sync when Vikunja (task lists only) answered 4
 when the server has none it syncs the tasks and reports, in the app's last sync report:
 "This server only has task lists (no events calendar) …". Day summaries and conversation
 events therefore do not reach Vikunja over CalDAV; the day summary reaches AllGLANCE
-through `omi_get_daily_summaries` / `allglance_get_day` (`omi_day_summary`) instead. Omi still talks to one CalDAV
+through `allglance_get_day` (`omi_day_summary`) instead: omi-local's bundled day (`get_day_review`: title,
+text, tags, sections) when the key lists that tool, else the classic `get_daily_summaries`; the field says
+which in `source`. Omi still talks to one CalDAV
 server per user, so choose: Vikunja through the gateway (tasks shared with the family) or
 Omi's bundled Radicale (tasks and events, Omi only).
 
 **Omi's MCP tools surfaced here.** `OMI_TOOLS=core` (default) exposes
-`get_daily_summaries`, `get_conversations`, `search_conversations`, `get_memories`,
+`get_day_review` (omi-local only), `get_daily_summaries`, `get_conversations`, `search_conversations`, `get_memories`,
 `search_memories` and `get_action_items` (reads only: creating or completing tasks goes
 through CalDAV / Vikunja, so there is one place to write them);
 `all` exposes every tool the key allows, writes included; `off` keeps only the day summary in
