@@ -66,3 +66,12 @@ a live Omi and a live gateway together.
 Network note: omi-host runs as its own compose project, so point it at the gateway by
 host address (`http://<host>:8090/…`), not a container name, and point the gateway at
 Omi the same way (`OMI_URL=http://<host>:8000`).
+
+**Trying it without Docker.** `scripts/dev/fake_vikunja.py` is a stand-in Vikunja (the REST the
+gateway uses, the CalDAV Omi syncs with: Basic auth, VTODO only, 404 on MKCALENDAR, one list per
+project), in memory, on one port. Start it, point the gateway at it (`VIKUNJA_URL`,
+`VIKUNJA_TOKEN`, `ENABLE_VIKUNJA_MCP=false`) and point Omi's `CALDAV_DEFAULT_URL` at the
+gateway's `/dav/`: tasks created in Omi appear as its REST tasks and tasks created through
+`POST /api/allglance/tasks` reach Omi on its next sync pass. A week-long synthetic run against it
+(seven bundled days, 21 Omi tasks pushed, two Vikunja tasks pulled, one completed each way,
+`allglance_get_day` with Omi's summary) is how this integration was exercised.

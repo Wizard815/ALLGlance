@@ -92,3 +92,6 @@ allglance-data/
 
 # Local proxy CA for docker/compose.proxy-ca.yml (never commit)
 docker/proxy-ca.crt
+
+# npm fallback lockfile (the repo uses pnpm-lock.yaml)
+gateway/package-lock.json
