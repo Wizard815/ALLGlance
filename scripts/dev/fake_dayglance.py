@@ -9,7 +9,7 @@ Then run the gateway with ENABLE_DAYGLANCE=true DAYGLANCE_MCP_HOST=127.0.0.1
 DAYGLANCE_MCP_PORT=8902 DAYGLANCE_MCP_TOKEN=dg-tok. What is modelled: dayglance_ping,
 dayglance_get_today / dayglance_get_day ({blocks, frames}), dayglance_list_unscheduled_tasks
 ({items}), dayglance_list_users ({users}), dayglance_create_task (a block when `start` is
-given, an inbox item otherwise), dayglance_set_task_completion. Only what the gateway uses.
+given, an inbox item otherwise; assignee_id must be a listed user), dayglance_set_task_completion. Only what the gateway uses.
 """
 
 import argparse
@@ -43,6 +43,9 @@ def create_task(args):
     if not title:
         raise ValueError('title is required')
     start = str(args.get('start') or '').strip()
+    assignee = args.get('assignee_id')
+    if assignee is not None and not any(u['id'] == assignee for u in USERS):
+        raise ValueError(f'No active user with id {json.dumps(assignee)}. Enumerate valid assignees with dayglance_list_users')
     with LOCK:
         if start:
             if 'priority' in args or 'deadline' in args:
@@ -53,11 +56,13 @@ def create_task(args):
                 'id': _new_id(), 'type': 'task', 'title': title, 'date': day,
                 'start_time': clock or '00:00', 'duration': int(args.get('duration_minutes') or 30),
                 'all_day': not clock, 'completed': False, 'notes': args.get('notes') or '',
+                **({'assignedUserSyncIds': [assignee]} if assignee else {}),
             }
             STATE['blocks'].append(block)
             return {'task': block}
         item = {'id': _new_id(), 'title': title, 'completed': False, 'priority': int(args.get('priority') or 0),
-                'deadline': args.get('deadline') or None, 'notes': args.get('notes') or ''}
+                'deadline': args.get('deadline') or None, 'notes': args.get('notes') or '',
+                **({'assignedUserSyncIds': [assignee]} if assignee else {})}
         STATE['inbox'].append(item)
         return {'task': item}
 

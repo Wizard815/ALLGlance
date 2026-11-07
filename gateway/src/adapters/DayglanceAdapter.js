@@ -197,9 +197,12 @@ export class DayglanceAdapter extends BaseAdapter {
    * the inbox (optionally with a due_date as its deadline). dayGLANCE priority is
    * 0-3, so higher values are capped.
    */
-  async writeTask({ title, start, due_date, duration_minutes, all_day, priority, notes } = {}) {
+  async writeTask({ title, start, due_date, duration_minutes, all_day, priority, notes, owner_id } = {}) {
     const args = { title };
     if (notes) args.notes = notes;
+    // A household member (id from allglance_list_users): dayGLANCE's create takes it as assignee_id
+    // and rejects an id that is not an active member, so the gateway passes it through untouched.
+    if (owner_id) args.assignee_id = String(owner_id);
     // dayGLANCE keeps priority and deadline on INBOX tasks only; a scheduled task
     // (with start) that carries them is rejected, so they are left off then.
     if (priority !== undefined && !start) args.priority = Math.max(0, Math.min(3, Math.round(Number(priority) || 0)));

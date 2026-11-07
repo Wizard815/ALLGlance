@@ -111,6 +111,9 @@ describe('dayGLANCE writes go through its MCP', () => {
     deepEqual(calls[0], ['dayglance_create_task', { title: 'Plan', start: '2026-11-07 09:00', duration_minutes: 45 }]); // scheduled: no priority (dayGLANCE rejects it)
     await adapter.writeTask({ title: 'Inbox', due_date: '2026-11-09', priority: 9 });
     deepEqual(calls[1], ['dayglance_create_task', { title: 'Inbox', priority: 3, deadline: '2026-11-09' }]);
+    // a household member (Omi's family calendar binds its events to one): dayGLANCE's assignee_id
+    await adapter.writeTask({ title: 'Inspection', start: '2026-11-13 11:00', duration_minutes: 60, owner_id: 'u-sam', notes: 'landlord' });
+    deepEqual(calls[2], ['dayglance_create_task', { title: 'Inspection', notes: 'landlord', assignee_id: 'u-sam', start: '2026-11-13 11:00', duration_minutes: 60 }]);
   });
 
   it('update maps done / title+priority+due / start onto the right dayGLANCE tools', async () => {
