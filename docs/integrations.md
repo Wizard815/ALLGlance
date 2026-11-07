@@ -52,6 +52,17 @@ which in `source`. Omi still talks to one CalDAV
 server per user, so choose: Vikunja through the gateway (tasks shared with the family) or
 Omi's bundled Radicale (tasks and events, Omi only).
 
+**Omi puts events on the family calendar, after asking.** Dates Omi hears in conversations
+("the inspection is Friday at eleven") do not go anywhere by themselves: Omi's app lists them
+under *Family calendar* with the date, time and length it heard, and the user fixes what the
+extractor got wrong, adds the event or declines it. Only "Add" writes: Omi POSTs
+`/api/allglance/tasks` with `source: "dayglance"`, `start: "YYYY-MM-DD HH:MM"` (the user's
+local time) and `duration_minutes`, the gateway's REST mirror of `allglance_create_task`, so
+the event lands as a dayGLANCE block and shows in `allglance_get_day`. The gateway needs
+dayGLANCE on (`ENABLE_DAYGLANCE=true`, `DAYGLANCE_MCP_HOST/PORT/TOKEN`); without it the
+create answers 503 and Omi shows that text. For tests without the desktop app,
+`scripts/dev/fake_dayglance.py` stands in for dayGLANCE's MCP.
+
 **Omi's MCP tools surfaced here.** `OMI_TOOLS=core` (default) exposes
 `get_day_review` (omi-local only), `get_daily_summaries`, `get_conversations`, `search_conversations`, `get_memories`,
 `search_memories` and `get_action_items` (reads only: creating or completing tasks goes
