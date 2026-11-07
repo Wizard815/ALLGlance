@@ -292,8 +292,14 @@ export class DayglanceAdapter extends BaseAdapter {
     return await this.readTasks(owner);
   }
 
+  /** The family roster, filled from dayGLANCE's users[] by reading today (a read normalizes it
+   *  as a side effect), so /api/allglance/users is complete before any day was read. */
   async refreshRoster() {
-    // Roster is synced on the first read in both transport paths.
+    try {
+      await this.#read('today');
+    } catch {
+      // dayGLANCE unreachable: the roster keeps what it had
+    }
     return this.#roster.list();
   }
 

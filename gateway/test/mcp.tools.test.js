@@ -248,3 +248,20 @@ describe('idempotent updates', () => {
     deepEqual(calls, ['PATCH /api/v2/tasks/7', 'GET /api/v2/tasks/7']);
   });
 });
+
+describe('dayGLANCE roster', () => {
+  it('refreshRoster fills the family roster from dayGLANCE before any day was read', async () => {
+    const roster = new Roster();
+    const adapter = new DayglanceAdapter({ roster, config: { dayglance: { enabled: true, webUrl: 'x' }, playwright: {} } });
+    adapter.setTransport({
+      read: async () => ({ tasks: [], blocks: [], users: [{ id: 'u-sam', name: 'Sam' }, { syncId: 'u-dana', name: 'Dana' }], meUserSyncId: null }),
+      call: async () => ({}),
+    }, 'mcp');
+    equal(roster.size(), 0);
+    await adapter.refreshRoster();
+    deepEqual(roster.list().map((p) => p.id), ['u-dana', 'u-sam']);
+    adapter.setTransport({ read: async () => { throw new Error('down'); }, call: async () => ({}) }, 'mcp');
+    await adapter.refreshRoster(); // unreachable: keeps what it had, never throws
+    equal(roster.size(), 2);
+  });
+});
