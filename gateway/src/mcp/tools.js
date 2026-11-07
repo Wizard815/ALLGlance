@@ -116,7 +116,7 @@ export function buildTools(gw) {
           source: { type: 'string', enum: ['vikunja', 'dayglance'], description: 'Default "vikunja".' },
           due_date: { type: 'string', description: `${DATE}. Vikunja due date, or a dayGLANCE inbox deadline.` },
           priority: { type: 'integer', minimum: 0, maximum: 5, description: '0 none, 1 low, 2 medium, 3 high, 4 urgent, 5 do now. dayGLANCE only has 0-3 (higher is capped) and only on inbox tasks: ignored when start is given.' },
-          owner_id: { type: 'string', description: 'Vikunja: assign to this person (id from allglance_list_users).' },
+          owner_id: { type: 'string', description: 'Assign to this person (id from allglance_list_users): Vikunja assignee, or the dayGLANCE member the block belongs to.' },
           project: { type: ['string', 'integer'], description: 'Vikunja: project name or id. Defaults to the household default project (Inbox).' },
           start: { type: 'string', description: 'dayGLANCE: "YYYY-MM-DD HH:MM" to schedule it on the calendar (or "YYYY-MM-DD" with all_day).' },
           duration_minutes: { type: 'integer', description: 'dayGLANCE: length when scheduled. Default 30.' },

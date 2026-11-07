@@ -57,8 +57,9 @@ Omi's bundled Radicale (tasks and events, Omi only).
 under *Family calendar* with the date, time and length it heard, and the user fixes what the
 extractor got wrong, adds the event or declines it. Only "Add" writes: Omi POSTs
 `/api/allglance/tasks` with `source: "dayglance"`, `start: "YYYY-MM-DD HH:MM"` (the user's
-local time) and `duration_minutes`, the gateway's REST mirror of `allglance_create_task`, so
-the event lands as a dayGLANCE block and shows in `allglance_get_day`. The gateway needs
+local time) and `duration_minutes` (and `owner_id`, the household member from `allglance_list_users` the event
+belongs to, when Omi is bound to one), the gateway's REST mirror of `allglance_create_task`, so
+the event lands as a dayGLANCE block, assigned to that member, and shows in `allglance_get_day`. The gateway needs
 dayGLANCE on (`ENABLE_DAYGLANCE=true`, `DAYGLANCE_MCP_HOST/PORT/TOKEN`); without it the
 create answers 503 and Omi shows that text. For tests without the desktop app,
 `scripts/dev/fake_dayglance.py` stands in for dayGLANCE's MCP.
