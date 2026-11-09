@@ -1,0 +1,18 @@
+{
+  "_comment": "Claude Code: save as .mcp.json in a project, or run: claude mcp add --transport http allglance http://<allglance-host>:8090/mcp --header 'Authorization: Bearer <GATEWAY_TOKEN>'. Claude Desktop (stdio only) uses the second entry via mcp-remote. Keep one, delete the other and this line.",
+  "mcpServers": {
+    "allglance": {
+      "type": "http",
+      "url": "http://<allglance-host>:8090/mcp",
+      "headers": { "Authorization": "Bearer <GATEWAY_TOKEN>" }
+    },
+    "allglance-desktop": {
+      "command": "npx",
+      "args": [
+        "-y", "mcp-remote", "http://<allglance-host>:8090/mcp",
+        "--allow-http", "--header", "Authorization:${ALLGLANCE_AUTH}"
+      ],
+      "env": { "ALLGLANCE_AUTH": "Bearer <GATEWAY_TOKEN>" }
+    }
+  }
+}

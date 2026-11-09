@@ -158,63 +158,192 @@ read blocks do not carry the assignee, so per-user filtering *over MCP* returns
 the full family day — ownership filtering is a property of the sources that
 expose it, not something the gateway can invent.
 
-## Running it
+## Install guide
 
-### Prerequisites
+About fifteen minutes, plus the first image build. You end up with one `allglance`
+container (gateway, dayGLANCE MCP, WebDAV sync) next to Vikunja, and optionally the
+Omi wearable wired in. Everything below is Docker; running from source is at the end.
 
-- Docker + Compose (Unraid appdata container, or any Docker host).
-- Node ≥ 20 and pnpm if you run the gateway or the dayGLANCE MCP from source.
+### 1. What you need
 
-### Docker (recommended): one command
+- A Docker host with **Docker Engine + Compose v2** (`docker compose version`). Unraid
+  works: use the terminal, or the Compose Manager plugin pointed at this folder.
+- `git`, `curl`, and about 2 GB of free disk (the `allglance` image is about 430 MB).
+- Free ports: **8090** (gateway), **8091** (sync), **3457** (Vikunja), and 6767 / 3000 /
+  6868 for the three web apps if you use them. Change any in
+  [`examples/docker-compose.override.example.yml`](examples/docker-compose.override.example.yml).
+- A passphrase for the household (you will type the same one into each GLANCE app).
+- Optional: the [Omi](https://github.com/Wizard815/omi-local) backend, for section 6.
+
+### 2. Install ALLGlance
 
 ```bash
 git clone https://github.com/Wizard815/ALLGlance && cd ALLGlance
 scripts/setup.sh
 ```
 
-`setup.sh` is safe to re-run. It generates every secret into `.env.allglance`
-(mode 600, gitignored), asks you for **one** thing (your household sync
-passphrase), creates the data folders with the right owner, starts Vikunja,
-creates its user and an API token that includes MCP access, builds and starts
-everything, waits for the gateway, and prints: the MCP URL + token for your
-agent, the sync settings to type into each GLANCE app, and the Vikunja login.
+You do not need `--recurse-submodules`: the apps run from their published images, and the
+submodules are only reference source.
 
-What remains manual is inherent to the apps (their settings live in the browser):
-once per device, enter the printed WebDAV settings and your passphrase in
-dayGLANCE / lastGLANCE / lifeGLANCE (see
-[Connecting the GLANCE apps](#connecting-the-glance-apps-one-time-per-device)).
+`setup.sh` is safe to re-run (it keeps every value already in `.env.allglance` and only fills
+gaps). It asks for the sync passphrase, generates every other secret, records your time zone
+and the address your devices use, creates the data folders (owned `99:100`, Unraid's
+`nobody:users`), starts Vikunja, creates its user and an API token with MCP access, builds
+and starts the stack, waits for the gateway, then prints three things: the **MCP URL and
+token**, the **sync settings** for the GLANCE apps, and the **Vikunja login**, plus the
+lines to paste into Omi. Options, all environment variables:
 
-Doing it by hand instead:
+| Variable | Default | Use |
+|---|---|---|
+| `ALLGLANCE_DATA` | `/mnt/user/appdata/allglance-data` | Where everything persistent lives. Keep it outside the checkout |
+| `GLANCE_SYNC_PASSPHRASE` | asked | Skip the prompt (scripts, CI) |
+| `TZ` | the host's | e.g. `Europe/London`; dayGLANCE's "today" and Omi's event times follow it |
+| `VIKUNJA_USER` | `household` | Name of the Vikunja user it creates |
+| `OMI_URL`, `OMI_MCP_TOKEN` | unset | Connect Omi (section 6) |
+| `COMPOSE_FILE` | `docker-compose.yml` | Add `:docker/compose.proxy-ca.yml` behind a TLS-intercepting proxy |
+
+Prefer to do it by hand?
 
 ```bash
-cp gateway/.env.example .env.allglance      # fill in the secrets and tokens
+cp gateway/.env.example .env.allglance && chmod 600 .env.allglance
+# fill in at least: GATEWAY_TOKEN, VIKUNJA_SERVICE_SECRET, DAYGLANCE_SYNC_PASSWORD,
+# DAYGLANCE_MCP_TOKEN, GLANCE_SYNC_PASSPHRASE, ALLGLANCE_DATA, TZ  (openssl rand -hex 24)
+mkdir -p "$ALLGLANCE_DATA"/{vikunja/{db,files,logs},dayglance-sync,gateway,glance-vault}
+sudo chown -R 99:100 "$ALLGLANCE_DATA"
+docker compose --env-file .env.allglance up -d vikunja     # then create a Vikunja user + token:
+# create an API token for it (Vikunja -> Settings -> API tokens) that includes MCP access
+# and put it in VIKUNJA_TOKEN (scripts/setup.sh does all of this through the API)
 docker compose --env-file .env.allglance up -d --build
-curl http://localhost:8090/health
 ```
 
-The gateway reaches the apps by service name on the compose network
-(the dayGLANCE MCP and the WebDAV server live in the same container as the gateway), set in `docker-compose.yml`.
+Building behind a TLS-intercepting proxy (corporate proxy, CI sandbox) fails verifying npm's
+certificate unless the build trusts its CA: put the bundle at `docker/proxy-ca.crt`
+(gitignored) and set `COMPOSE_FILE=docker-compose.yml:docker/compose.proxy-ca.yml`.
 
-**Building behind a TLS-intercepting proxy** (corporate proxy, CI sandbox): image
-builds fail verifying npm's certificate unless they trust the proxy's CA. Put the
-CA bundle at `docker/proxy-ca.crt` (gitignored) and set
-`COMPOSE_FILE=docker-compose.yml:docker/compose.proxy-ca.yml` before running
-`scripts/setup.sh` (or any `docker compose` command).
+### 3. Check that it works
 
-The gateway image no longer bundles Chromium by default (the legacy browser
-reader is opt-in: `--build-arg INSTALL_BROWSER=true`).
+```bash
+curl -s http://localhost:8090/health
+```
 
-### From source
+Expect `"vikunja":{"ok":true,...}` and `"dayglance":{"ok":true,...}`. dayGLANCE, lastGLANCE and
+lifeGLANCE may say "no ... sync yet": that is normal until each app has synced once (section 5).
+
+```bash
+TOKEN=$(grep ^GATEWAY_TOKEN= .env.allglance | cut -d= -f2)
+curl -s -X POST http://localhost:8090/api/allglance/tasks -H "Authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' -d '{"title":"Install check","source":"vikunja"}'
+```
+
+You should get a `201` with the task, and see it in Vikunja at `http://<host>:3457`
+(log in with the user `setup.sh` printed). Delete it there; the gateway deliberately cannot delete tasks.
+
+### 4. Connect your agent
+
+Point Claude (or anything that speaks MCP) at the one endpoint:
+
+- **URL** `http://<host>:8090/mcp`, **header** `Authorization: Bearer <GATEWAY_TOKEN>`
+- Claude Code: `claude mcp add --transport http allglance http://<host>:8090/mcp --header "Authorization: Bearer <GATEWAY_TOKEN>"`
+- Other clients and Claude Desktop: [`examples/claude-mcp.json`](examples/claude-mcp.json)
+
+Then ask "what's on today?" The tools are listed under [The one MCP / REST surface](#the-one-mcp--rest-surface).
+Home Assistant and CalDAV apps use the same gateway: [Using the data from other tools](#using-the-data-from-other-tools).
+
+### 5. Connect the GLANCE apps (once per device)
+
+Each app syncs to the WebDAV server inside the `allglance` container, with the same
+passphrase. The exact fields are in [Connecting the GLANCE apps](#connecting-the-glance-apps-one-time-per-device).
+Until an app has synced, the gateway has nothing of its data to show.
+
+### 6. Connect Omi (optional)
+
+Omi ([omi-local](https://github.com/Wizard815/omi-local)) runs as its own compose project, so each side
+is configured with the other's **host address** (not a container name). Both directions are
+independent; do either or both.
+
+**Omi uses ALLGlance** (tasks, the family calendar, chat tools). On the Omi host, add to
+`omi-host/.env` (template: [`examples/omi-host.env.example`](examples/omi-host.env.example); `setup.sh` prints
+these with your real values):
+
+```
+ALLGLANCE_URL=http://<allglance-host>:8090
+ALLGLANCE_TOKEN=<GATEWAY_TOKEN>
+CALDAV_DEFAULT_URL=http://<allglance-host>:8090/dav/
+CALDAV_USER=<vikunja user>
+CALDAV_PASSWORD=<vikunja password>
+```
+
+then `docker compose up -d` in `omi-host`. Within about 15 minutes (a change syncs in about 20 seconds, or run it from the app's *Calendar &
+tasks* page) Omi's action items and Vikunja's tasks sync both ways, and Omi's chat gets the
+`allglance_*` tools. Dates Omi hears in conversations are **offered, not added**: *Settings ->
+Family calendar* shows each one to fix, add or decline, and an approved one becomes a dayGLANCE
+block (pick the household member under *Adding as*). dayGLANCE must be on in ALLGlance
+(`ENABLE_DAYGLANCE=true`, the default).
+
+**ALLGlance reads Omi** (the day summary inside `allglance_get_day`, and `omi_*` tools). In the
+Omi app: *Settings -> Developer -> MCP -> Create Key*, then:
+
+```bash
+OMI_URL=http://<omi-host>:8000 OMI_MCP_TOKEN=omi_mcp_... scripts/setup.sh    # re-run is safe
+```
+
+(or put the two values in `.env.allglance` and `docker compose --env-file .env.allglance up -d`).
+`OMI_TOOLS=core` (default) exposes read-only tools; `all` includes writes. Check:
+`curl -s localhost:8090/health` now has an `"omi":{"ok":true,...}` entry.
+
+Why events go to dayGLANCE and not over CalDAV: Vikunja holds task lists only, with no events
+calendar. Details and the full set-up are in [docs/integrations.md](docs/integrations.md) and
+Omi's `omi-host/examples/allglance/README.md`.
+
+### 7. Reaching it from outside your network
+
+Do not publish 8090 or 8091 to the internet as they are: the gateway token is the only gate
+on `/mcp` and `/api/allglance`, and CalDAV is plain HTTP basic auth. Put it behind HTTPS
+(a Caddy example is in [`examples/reverse-proxy/Caddyfile`](examples/reverse-proxy/Caddyfile)) or a VPN such as
+Tailscale or WireGuard, and keep `GATEWAY_TOKEN` long and secret. Browser builds of the apps
+need HTTPS to sync from outside.
+
+### 8. Update, back up, remove
+
+```bash
+git pull && docker compose --env-file .env.allglance up -d --build   # update ALLGlance
+scripts/upstream.sh status                                           # are the pinned apps behind?
+```
+
+Back up the whole of `$ALLGLANCE_DATA` plus `.env.allglance` (Vikunja's SQLite database is
+in `vikunja/db`; stop the stack or use `vikunja dump` for a consistent copy). `docker compose
+--env-file .env.allglance down` removes the containers and keeps your data; delete the data
+folder only if you mean to start over. If the stack stops and comes back, the apps resync
+by themselves on their next interval; nothing needs repairing by hand.
+
+### 9. If something is wrong
+
+| You see | Likely cause and fix |
+|---|---|
+| `setup.sh`: Vikunja never healthy | `docker logs allglance-vikunja`. Usually the data folder is not writable by `99:100` (`chown -R 99:100 $ALLGLANCE_DATA`) |
+| `/health`: `dayglance` not ok, "no ... sync yet" | The app has not synced to the WebDAV server yet, or the URL/user/password/folder in the app differ from `.env.allglance` |
+| "Cannot decrypt ...: wrong DAYGLANCE_SYNC_PASSPHRASE" | The passphrase in `.env.allglance` differs from the one in the apps |
+| `401` from `/mcp` or `/api/allglance` | Missing or wrong `Authorization: Bearer <GATEWAY_TOKEN>` |
+| Build fails on a certificate error | Behind a TLS-intercepting proxy: see section 2 |
+| Build fails pulling `node` with `429` | Docker Hub rate limit: `docker login`, or pull the base image from a mirror |
+| Omi tasks do not appear | `ALLGLANCE_URL`/`ALLGLANCE_TOKEN`/`CALDAV_*` use the host address, not a container name; check the sync report on Omi's *Calendar & tasks* page |
+| Omi offers no events to add | `ALLGLANCE_URL`/`ALLGLANCE_TOKEN` unset in `omi-host/.env`, or nothing with a date was heard in the last week |
+| `allglance_get_day` has no `omi_day_summary` | `OMI_URL` unset, or the key lacks the conversations scope; `/health` shows why |
+
+### Running from source
 
 ```bash
 cd gateway
 corepack enable && pnpm install
-pnpm start                        # node src/server.js → :8090
+pnpm start                        # node src/server.js -> :8090
 
 cd ../gateway/container-mcp       # the dayGLANCE MCP service
 npm install
 DAYGLANCE_MCP_TOKEN=secret DAYGLANCE_STATE_FILE=/data/dayglance-state.json node index.mjs
 ```
+
+For development without Docker, `scripts/dev/fake_vikunja.py` and `scripts/dev/fake_dayglance.py`
+stand in for the two backends (see [docs/integrations.md](docs/integrations.md)).
 
 ## Where the data comes from (and the honest gaps)
 
@@ -363,8 +492,11 @@ AllGLANCE/
 │   ├── container-mcp/    #   container port of dayGLANCE's MCP — our code
 │   ├── DESIGN.md         #   design document
 │   └── Dockerfile
-├── docker-compose.yml    # the whole stack (5 containers: allglance + 4 apps)
-└── gateway/.env.example  # copy to .env.allglance
+├── docker-compose.yml    # the whole stack (allglance + vikunja + the 3 web apps)
+├── gateway/.env.example  # copy to .env.allglance (scripts/setup.sh does it)
+├── scripts/              # setup.sh (install), upstream.sh (upkeep), soak.mjs, dev/ (fake backends)
+├── examples/             # Omi env, MCP client config, compose override, Home Assistant, Caddy
+└── docs/                 # integrations.md (Omi, Pondering Orb, Home Assistant)
 ```
 
 The apps and vikunja are submodules pointing at their own upstreams (no forks

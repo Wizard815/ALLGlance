@@ -1,0 +1,21 @@
+# Home Assistant: create tasks from automations. Put these in secrets.yaml:
+#   allglance_task_url: http://<allglance-host>:8090/api/allglance/tasks
+#   allglance_auth: Bearer <GATEWAY_TOKEN>
+#
+# Reading and ticking tasks is better through Home Assistant's built-in CalDAV
+# integration (Settings -> Devices & services -> Add -> CalDAV; URL
+# http://<allglance-host>:8090/dav/, your Vikunja login): one to-do list per Vikunja
+# project, both ways. This file only adds "create a task from an automation".
+
+rest_command:
+  allglance_add_task:
+    url: !secret allglance_task_url
+    method: post
+    headers:
+      Authorization: !secret allglance_auth
+      Content-Type: application/json
+    payload: >-
+      {"title": {{ title | tojson }}, "source": "vikunja"
+       {% if due is defined %}, "due_date": {{ due | tojson }}{% endif %}}   {# YYYY-MM-DD #}
+
+# Use it: service rest_command.allglance_add_task with data { title: "Change the filter", due: "2026-12-01" }
