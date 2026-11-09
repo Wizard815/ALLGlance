@@ -1,0 +1,20 @@
+# Copy to docker-compose.override.yml (compose merges it automatically). Delete what you do not need.
+#   cp examples/docker-compose.override.example.yml docker-compose.override.yml
+services:
+  allglance:
+    ports: !override
+      # Publish only on the LAN address of this machine (not every interface):
+      - "192.168.1.20:8090:8090"   # gateway: MCP, REST, CalDAV
+      - "192.168.1.20:8091:6065"   # WebDAV sync server for the apps
+  vikunja:
+    ports: !override
+      - "192.168.1.20:3457:3456"
+  # Not running the three browser apps here (you use the desktop / phone builds)? Park them:
+  dayglance:
+    profiles: ["web-apps"]
+  lastglance:
+    profiles: ["web-apps"]
+  lifeglance:
+    profiles: ["web-apps"]
+  # The optional zero-knowledge relay (nothing in this stack needs it):
+  #   docker compose --profile vault up -d

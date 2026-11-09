@@ -18,6 +18,8 @@
 #   COMPOSE_FILE            e.g. docker-compose.yml:docker/compose.proxy-ca.yml (behind a
 #                           TLS-intercepting proxy; see README)
 #   VIKUNJA_USER            Vikunja username to create (default: household)
+#   TZ                      time zone to record (default: the host's, else UTC)
+#   OMI_URL / OMI_MCP_TOKEN connect the Omi wearable backend (optional; see README)
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -52,6 +54,13 @@ fill GATEWAY_TOKEN "$(rand 40)"
 fill GLANCEVAULT_DEVICE_TOKEN "$(rand 40)"
 [[ -n "${ALLGLANCE_DATA:-}" ]] && set_kv ALLGLANCE_DATA "$ALLGLANCE_DATA"
 fill ALLGLANCE_DATA /mnt/user/appdata/allglance-data
+HOSTIP=$(hostname -I 2>/dev/null | awk '{print $1}'); HOSTIP=${HOSTIP:-localhost}
+HOSTTZ=${TZ:-$(cat /etc/timezone 2>/dev/null || timedatectl show -p Timezone --value 2>/dev/null || true)}
+[[ -n "${TZ:-}" ]] && set_kv TZ "$TZ"
+[[ "$(get TZ)" == UTC || -z "$(get TZ)" ]] && [[ -n "$HOSTTZ" ]] && set_kv TZ "$HOSTTZ"
+[[ "$(get VIKUNJA_PUBLIC_URL)" == "http://localhost:3457" || -z "$(get VIKUNJA_PUBLIC_URL)" ]] && set_kv VIKUNJA_PUBLIC_URL "http://$HOSTIP:3457"
+[[ -n "${OMI_URL:-}" ]] && set_kv OMI_URL "${OMI_URL%/}"
+[[ -n "${OMI_MCP_TOKEN:-}" ]] && set_kv OMI_MCP_TOKEN "$OMI_MCP_TOKEN"
 
 if [[ -z "$(get GLANCE_SYNC_PASSPHRASE)" ]]; then
   if [[ -n "${GLANCE_SYNC_PASSPHRASE:-}" ]]; then
@@ -109,7 +118,7 @@ for _ in $(seq 1 60); do curl -fsS "http://localhost:$GPORT/health" >/dev/null 2
 curl -fsS "http://localhost:$GPORT/health" >/dev/null || { echo "gateway not healthy; see: docker logs allglance" >&2; exit 1; }
 
 # --- 5. what to do next --------------------------------------------------------------
-HOST=$(hostname -I 2>/dev/null | awk '{print $1}'); HOST=${HOST:-localhost}
+HOST=$HOSTIP
 cat <<EOF
 
 AllGLANCE is running.
@@ -134,4 +143,18 @@ AllGLANCE is running.
                      Assistant, phones and calendar apps all point here)
 
 Secrets are in $ENV_FILE (mode 600, never committed).
+EOF
+
+# --- 4. Omi (optional) ---------------------------------------------------------------
+cat <<EOF
+
+ 4. Omi wearable (optional; add these to omi-host/.env, then restart Omi):
+      ALLGLANCE_URL=http://$HOST:8090
+      ALLGLANCE_TOKEN=$(get GATEWAY_TOKEN)
+      CALDAV_DEFAULT_URL=http://$HOST:8090/dav/
+      CALDAV_USER=$(get VIKUNJA_BOOTSTRAP_USER)
+      CALDAV_PASSWORD=$(get VIKUNJA_BOOTSTRAP_PASSWORD)
+    And so this gateway can read Omi back (Omi app -> Settings -> Developer -> MCP -> Create Key):
+      OMI_URL=http://<omi-host>:8000 OMI_MCP_TOKEN=omi_mcp_... scripts/setup.sh   (safe to re-run)
+$( [[ -n "$(get OMI_URL)" ]] && echo "    Omi is configured here: OMI_URL=$(get OMI_URL)" )
 EOF

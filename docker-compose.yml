@@ -12,10 +12,10 @@
 # *union* that wires them together and adds the gateway.
 #
 # --- Versions ---
-# Image tags match the submodule pins under apps/ and services/ (dayglance
-# v5.9.0, lastglance v2.9.0, lifeglance v3.6.0, vikunja v2.7.1). The submodules
-# are reference source only; they are not built. When you bump one, bump the
-# other and re-run gateway/container-mcp/scripts/vendor-model.mjs (dayglance).
+# Image tags are the *_IMAGE_TAG defaults below and in gateway/.env.example; the
+# submodules under apps/ and services/ are pinned to the same releases and are
+# reference source only (never built). Move them together with
+# `scripts/upstream.sh bump <name>` and check with `scripts/upstream.sh verify`.
 #
 # --- Unraid / appdata layout ---
 # Map each service's persistent data under ${ALLGLANCE_DATA:-/mnt/user/appdata/allglance-data}/ so it
@@ -87,7 +87,7 @@ services:
     environment:
       - VIKUNJA_SERVICE_SECRET=${VIKUNJA_SERVICE_SECRET:?set VIKUNJA_SERVICE_SECRET in .env.allglance}
       - VIKUNJA_SERVICE_INTERFACE=:3456
-      - VIKUNJA_SERVICE_PUBLICURL=http://localhost:3457
+      - VIKUNJA_SERVICE_PUBLICURL=${VIKUNJA_PUBLIC_URL:-http://localhost:3457}   # the address your devices use (setup.sh fills it)
       - VIKUNJA_SERVICE_ENABLECALDAV=true
       - VIKUNJA_SERVICE_ENABLEREGISTRATION=${VIKUNJA_ENABLE_REGISTRATION:-false}
       - VIKUNJA_DATABASE_TYPE=sqlite

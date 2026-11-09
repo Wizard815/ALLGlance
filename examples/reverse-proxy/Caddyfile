@@ -1,0 +1,11 @@
+# HTTPS in front of the stack with Caddy (https://caddyserver.com). Replace the host names.
+# /mcp streams, so nothing here may buffer or cap the response; Caddy does this by default.
+
+allglance.example.com {
+	reverse_proxy 127.0.0.1:8090
+}
+
+# The WebDAV sync server the GLANCE apps use. Browser builds need HTTPS to sync from outside.
+sync.example.com {
+	reverse_proxy 127.0.0.1:8091
+}
