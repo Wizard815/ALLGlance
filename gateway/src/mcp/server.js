@@ -25,7 +25,13 @@ export function createAllglanceMcpServer(gateway, opts = {}) {
 
   const server = new Server(
     { name, version },
-    { capabilities: { tools: {} } }
+    {
+      capabilities: { tools: {} },
+      instructions:
+        'AllGLANCE: the household\'s tasks (Vikunja), day plan (dayGLANCE), chores (lastGLANCE) and life milestones (lifeGLANCE). ' +
+        'Start with allglance_get_day for "today", allglance_list_tasks for anything longer. Dates are YYYY-MM-DD; turn words like ' +
+        '"tomorrow" into a date before calling. To change a task, pass the source and id exactly as a list tool returned them.',
+    }
   );
 
   // Collect the tool metadata so the server can list + dispatch them.
@@ -41,6 +47,7 @@ export function createAllglanceMcpServer(gateway, opts = {}) {
       name: t.name,
       description: t.description,
       inputSchema: t.inputSchema,
+      ...(t.annotations ? { annotations: t.annotations } : {}),
     })),
   }));
 
