@@ -16,6 +16,25 @@ import { compactTask, compactBlock, compactChore, compactMilestone, byDue, today
 const json = (data) => ({ content: [{ type: 'text', text: JSON.stringify(data) }] });
 const DATE = 'YYYY-MM-DD';
 
+// The SDK passes arguments through unchecked, so the schema's formats and enums
+// are enforced here: a word like "tomorrow" in a date would otherwise compare
+// as text and quietly return the wrong tasks, or reach the app as is.
+const isDay = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s) && new Date(`${s}T12:00:00Z`).toISOString().startsWith(s);
+const bad = (msg, write = true) => { throw new Error(write ? `${msg} Nothing was changed.` : msg); };
+function check(args, { days = [], start, oneOf = {}, priority = false, write = false } = {}) {
+  const fail = (msg) => bad(msg, write);
+  for (const k of days) if (args[k] !== undefined && args[k] !== null && !isDay(String(args[k]))) fail(`${k} must be a real date as ${DATE} (e.g. ${today()}), got "${args[k]}".`);
+  if (start && args.start !== undefined) {
+    const s = String(args.start);
+    const ok = args.all_day ? isDay(s) : /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(s) && isDay(s.slice(0, 10)) && +s.slice(11, 13) < 24 && +s.slice(14) < 60;
+    if (!ok) fail(`start must be "YYYY-MM-DD HH:MM" (24-hour)${args.all_day ? ', or just YYYY-MM-DD with all_day' : ''}, got "${s}".`);
+  }
+  for (const [k, values] of Object.entries(oneOf)) if (args[k] !== undefined && !values.includes(args[k])) fail(`${k} must be one of ${values.join(', ')}, got "${args[k]}".`);
+  if (priority && args.priority !== undefined && !(Number.isInteger(args.priority) && args.priority >= 0 && args.priority <= 5)) fail(`priority must be a whole number 0-5 (0 none … 5 do now), got ${JSON.stringify(args.priority)}.`);
+}
+const READ = { readOnlyHint: true };
+const WRITE = { readOnlyHint: false, destructiveHint: false };
+
 /** Turn transport failures into something an agent can act on (and not retry blindly). */
 export function explain(err, source) {
   const msg = String(err?.message ?? err);
@@ -42,7 +61,8 @@ export function buildTools(gw) {
           owner_id: { type: 'string', description: 'Only this person\'s items (id from allglance_list_users). Omit for the whole household.' },
         },
       },
-      handler: async ({ date, owner_id } = {}) => json(await gw.getDay(date ?? today(), owner_id ?? null)),
+      annotations: READ,
+      handler: async (args = {}) => { check(args, { days: ['date'] }); return json(await gw.getDay(args.date ?? today(), args.owner_id ?? null)); },
     },
     {
       name: 'allglance_list_tasks',
@@ -62,7 +82,11 @@ export function buildTools(gw) {
           limit: { type: 'integer', minimum: 1, maximum: 200, description: 'Default 50. If more match, "truncated" is true: narrow the filters.' },
         },
       },
-      handler: async (args = {}) => json(await gw.listTasks(args)),
+      annotations: READ,
+      handler: async (args = {}) => {
+        check(args, { days: ['due_on_or_before', 'due_on_or_after'], oneOf: { status: ['open', 'done', 'all'], source: ['vikunja', 'dayglance'] } });
+        return json(await gw.listTasks(args));
+      },
     },
     {
       name: 'allglance_list_chores',
@@ -78,6 +102,7 @@ export function buildTools(gw) {
           limit: { type: 'integer', minimum: 1, maximum: 200, description: 'Default 50.' },
         },
       },
+      annotations: READ,
       handler: async (args = {}) => json(await gw.listChores(args)),
     },
     {
@@ -93,13 +118,15 @@ export function buildTools(gw) {
           limit: { type: 'integer', minimum: 1, maximum: 200, description: 'Default 50.' },
         },
       },
-      handler: async (args = {}) => json(await gw.listMilestones(args)),
+      annotations: READ,
+      handler: async (args = {}) => { check(args, { days: ['from', 'to'] }); return json(await gw.listMilestones(args)); },
     },
     {
       name: 'allglance_list_users',
       description:
         'List the household members known across the apps (id and name). Call it to turn a name ("Dad") into the owner_id the other tools take. Cheap; once per conversation is enough.',
       inputSchema: { type: 'object', properties: {} },
+      annotations: READ,
       handler: async () => json({ users: await gw.refreshRoster() }),
     },
     {
@@ -125,7 +152,10 @@ export function buildTools(gw) {
         },
         required: ['title'],
       },
-      handler: async (args) => {
+      annotations: WRITE,
+      handler: async (args = {}) => {
+        if (!String(args.title ?? '').trim()) bad('title is empty.');
+        check(args, { days: ['due_date'], start: true, priority: true, oneOf: { source: ['vikunja', 'dayglance'] }, write: true });
         try {
           const { task, source } = await gw.createTask(args);
           return json({ created: compactTask(task), source });
@@ -143,7 +173,7 @@ export function buildTools(gw) {
       inputSchema: {
         type: 'object',
         properties: {
-          source: { type: 'string', enum: ['vikunja', 'dayglance'] },
+          source: { type: 'string', enum: ['vikunja', 'dayglance'], description: 'Where the task lives, exactly as listed next to its id. lastGLANCE and lifeGLANCE are read-only here.' },
           id: { type: 'string', description: 'The task id exactly as listed.' },
           done: { type: 'boolean', description: 'true = complete it, false = reopen it.' },
           title: { type: 'string', description: 'New title.' },
@@ -155,7 +185,16 @@ export function buildTools(gw) {
         },
         required: ['source', 'id'],
       },
-      handler: async ({ source, id, ...patch }) => {
+      annotations: WRITE,
+      handler: async ({ source, id, ...patch } = {}) => {
+        if (!['vikunja', 'dayglance'].includes(source)) {
+          bad(`source must be vikunja or dayglance, got "${source}".${['lastglance', 'lifeglance'].includes(source) ? ` ${source} data is read-only here; change it in that app.` : ''}`);
+        }
+        if (!String(id ?? '').trim()) bad('id is required: take it from allglance_list_tasks or allglance_get_day.');
+        check(patch, { days: ['due_date'], start: true, priority: true, write: true });
+        if (!['done', 'title', 'priority', 'due_date', 'start', 'notes'].some((k) => patch[k] !== undefined)) {
+          bad('Give at least one change: done, title, priority, due_date, start or notes.');
+        }
         try {
           const { task } = await gw.updateTask(source, id, patch);
           return json({ updated: compactTask(task) });
