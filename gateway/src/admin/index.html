@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AllGLANCE admin</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--ink:#1b2330;--mute:#64707f;--line:#e3e7ec;--accent:#2f6fed;--ok:#1f9d55;--warn:#c27c0e;--bad:#d1342f;--pill:#eef1f5;--code:#f1f3f6}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#11151b;--card:#1a2029;--ink:#e8ecf2;--mute:#97a3b3;--line:#2a3340;--accent:#6b9bff;--ok:#44c27a;--warn:#e0a13a;--bad:#ef6a65;--pill:#262e3a;--code:#232b36}}
+:root[data-theme=dark]{--bg:#11151b;--card:#1a2029;--ink:#e8ecf2;--mute:#97a3b3;--line:#2a3340;--accent:#6b9bff;--ok:#44c27a;--warn:#e0a13a;--bad:#ef6a65;--pill:#262e3a;--code:#232b36}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}
+header{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:14px 20px;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:2}
+header h1{font-size:18px;margin:0;font-weight:650}header .meta{color:var(--mute);font-size:13px}
+nav{display:flex;gap:4px;margin-left:auto}nav button{background:none;border:0;padding:8px 12px;border-radius:8px;color:var(--mute);font:inherit;cursor:pointer}nav button[aria-selected=true]{background:var(--pill);color:var(--ink);font-weight:600}
+main{max-width:980px;margin:0 auto;padding:20px 16px 60px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+.card h3{margin:0 0 6px;font-size:15px;display:flex;align-items:center;gap:8px}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--mute);flex:none}.dot.ok{background:var(--ok)}.dot.bad{background:var(--bad)}.dot.warn{background:var(--warn)}
+.sub{color:var(--mute);font-size:13px;margin:2px 0}.pill{display:inline-block;background:var(--pill);border-radius:999px;padding:1px 9px;font-size:12px;color:var(--mute);margin-right:4px}
+h2{font-size:16px;margin:26px 0 10px}h2:first-child{margin-top:0}
+.row{display:grid;grid-template-columns:170px 1fr auto;gap:10px;align-items:center;padding:9px 0;border-top:1px solid var(--line)}.row:first-child{border-top:0}
+.row label{color:var(--mute);font-size:13px}.row .val{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--code);padding:5px 8px;border-radius:6px;word-break:break-all}
+@media(max-width:620px){.row{grid-template-columns:1fr auto}.row label{grid-column:1/-1}}
+button.copy,button.act{background:var(--pill);border:1px solid var(--line);color:var(--ink);border-radius:8px;padding:5px 10px;font:inherit;font-size:13px;cursor:pointer}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}button:disabled{opacity:.5;cursor:default}
+pre{background:var(--code);border-radius:8px;padding:10px 12px;overflow:auto;font-size:12.5px;margin:6px 0}
+.todo{display:flex;gap:10px;padding:8px 0;border-top:1px solid var(--line)}.todo:first-child{border-top:0}.todo .t{font-weight:600}
+.field{padding:10px 0;border-top:1px solid var(--line)}.field:first-of-type{border-top:0}
+.field .top{display:flex;justify-content:space-between;gap:12px;align-items:center}.field .help{color:var(--mute);font-size:13px;margin-top:3px}
+input[type=text],input[type=password],select{font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:6px 9px;min-width:220px}
+.switch{position:relative;width:42px;height:24px;flex:none}.switch input{opacity:0;width:100%;height:100%;position:absolute;margin:0;cursor:pointer;z-index:1}.switch span{position:absolute;inset:0;background:var(--pill);border:1px solid var(--line);border-radius:999px}.switch span::after{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:var(--mute);transition:.15s}.switch input:checked+span{background:var(--accent);border-color:var(--accent)}.switch input:checked+span::after{left:20px;background:#fff}
+.banner{border:1px solid var(--warn);background:color-mix(in srgb,var(--warn) 12%,var(--card));border-radius:10px;padding:10px 14px;margin:0 0 14px}
+.banner.bad{border-color:var(--bad);background:color-mix(in srgb,var(--bad) 12%,var(--card))}
+.gate{max-width:380px;margin:12vh auto;padding:0 16px}.gate input{width:100%;margin:10px 0}
+.hide{display:none!important}.src{font-size:12px;color:var(--mute)}
+</style>
+</head>
+<body>
+<div id="gate" class="gate hide">
+  <h2>AllGLANCE admin</h2>
+  <p class="sub">Enter the gateway token (<code>GATEWAY_TOKEN</code> in .env.allglance).</p>
+  <input id="tok" type="password" placeholder="Gateway token" autocomplete="current-password">
+  <button class="act primary" id="tokgo">Open</button> <span id="tokerr" class="sub" style="color:var(--bad)"></span>
+</div>
+<div id="app" class="hide">
+<header>
+  <h1>AllGLANCE</h1><span class="meta" id="meta"></span>
+  <nav role="tablist">
+    <button role="tab" data-tab="overview" aria-selected="true">Overview</button>
+    <button role="tab" data-tab="setup" aria-selected="false">Setup</button>
+    <button role="tab" data-tab="settings" aria-selected="false">Settings</button>
+  </nav>
+</header>
+<main>
+  <section id="overview"></section>
+  <section id="setup" class="hide"></section>
+  <section id="settings" class="hide"></section>
+</main>
+</div>
+<script>
+const $ = (s, r = document) => r.querySelector(s);
+const h = (tag, attrs = {}, ...kids) => { const e = document.createElement(tag); for (const [k, v] of Object.entries(attrs)) { if (k === 'class') e.className = v; else if (k.startsWith('on')) e.addEventListener(k.slice(2), v); else if (v !== false && v != null) e.setAttribute(k, v === true ? '' : v); } for (const k of kids.flat()) if (k != null) e.append(k.nodeType ? k : document.createTextNode(String(k))); return e; };
+let token = ''; try { token = sessionStorage.getItem('allglance-token') || ''; } catch {}
+async function api(path, opts = {}) {
+  const res = await fetch('/admin/api' + path, { ...opts, headers: { 'content-type': 'application/json', ...(token ? { authorization: 'Bearer ' + token } : {}) } });
+  if (res.status === 401) { showGate(); throw new Error('auth'); }
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || res.statusText);
+  return body;
+}
+function showGate(msg) { $('#app').classList.add('hide'); $('#gate').classList.remove('hide'); $('#tokerr').textContent = msg || ''; }
+$('#tokgo').onclick = async () => { token = $('#tok').value.trim(); try { sessionStorage.setItem('allglance-token', token); } catch {} try { await api('/status'); $('#gate').classList.add('hide'); start(); } catch (e) { if (e.message === 'auth') showGate('That token was not accepted.'); } };
+$('#tok').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#tokgo').click(); });
+
+const ago = (iso) => { if (!iso) return 'never'; const s = Math.max(0, (Date.now() - new Date(iso)) / 1000); if (s < 90) return 'just now'; if (s < 5400) return Math.round(s / 60) + ' min ago'; if (s < 129600) return Math.round(s / 3600) + ' h ago'; return Math.round(s / 86400) + ' days ago'; };
+const dur = (s) => s < 3600 ? Math.round(s / 60) + ' min' : s < 172800 ? Math.round(s / 3600) + ' h' : Math.round(s / 86400) + ' days';
+const copyBtn = (text) => { const b = h('button', { class: 'copy', type: 'button', onclick: async () => { try { await navigator.clipboard.writeText(text); b.textContent = 'Copied'; setTimeout(() => (b.textContent = 'Copy'), 1200); } catch { b.textContent = 'Select and copy'; } } }, 'Copy'); return b; };
+const kv = (label, value, secretHint) => h('div', { class: 'row' }, h('label', {}, label), h('div', { class: 'val' }, value == null || value === '' ? (secretHint || 'not set') : String(value)), value ? copyBtn(String(value)) : h('span'));
+
+const APPS = { vikunja: 'Vikunja', dayglance: 'dayGLANCE', lastglance: 'lastGLANCE', lifeglance: 'lifeGLANCE', omi: 'Omi' };
+function card(name, ad, file, extra = []) {
+  const ok = ad?.ok; const dot = h('span', { class: 'dot ' + (ok ? 'ok' : 'bad') });
+  const lines = [];
+  if (ad && !ok) lines.push(h('div', { class: 'sub', style: 'color:var(--bad)' }, ad.error || 'Not reachable'));
+  if (ok && name === 'vikunja') lines.push(h('div', { class: 'sub' }, ad.authenticated ? 'API token accepted' : 'No API token: read-only'));
+  if (ok && ad.mode) lines.push(h('div', { class: 'sub' }, 'Reads via ' + ad.mode));
+  if (ok && ad.mcpTools != null) lines.push(h('div', { class: 'sub' }, ad.mcpTools + ' Omi tools exposed'));
+  if (file) lines.push(h('div', { class: 'sub' }, file.exists ? ['Last synced ', h('b', {}, ago(file.modified)), ' ', file.encrypted ? h('span', { class: 'pill' }, 'encrypted') : h('span', { class: 'pill' }, 'plain')] : 'Waiting for the first sync from the app'));
+  return h('div', { class: 'card' }, h('h3', {}, dot, APPS[name] || name), lines, extra);
+}
+
+async function renderOverview() {
+  const s = await api('/status'); const root = $('#overview'); root.replaceChildren();
+  $('#meta').textContent = 'v' + s.version + ' · up ' + dur(s.uptimeSeconds);
+  const bad = Object.entries(s.adapters).filter(([, a]) => !a.ok).map(([n]) => APPS[n] || n);
+  if (bad.length) root.append(h('div', { class: 'banner' }, 'Needs attention: ' + bad.join(', ') + '. See the Setup tab for what each one needs.'));
+  const g = h('div', { class: 'grid' });
+  for (const n of ['vikunja', 'dayglance', 'lastglance', 'lifeglance', 'omi']) if (s.adapters[n]) g.append(card(n, s.adapters[n], s.files[n]));
+  g.append(h('div', { class: 'card' }, h('h3', {}, h('span', { class: 'dot ' + (s.syncServer?.ok === false ? 'bad' : 'ok') }), 'Sync server'), h('div', { class: 'sub' }, s.syncServer ? (s.syncServer.ok ? 'WebDAV answering' : 'WebDAV not answering') : 'Not run by this process')));
+  const ev = s.files.events;
+  g.append(h('div', { class: 'card' }, h('h3', {}, h('span', { class: 'dot ' + (ev.exists ? 'ok' : 'warn') }), 'App-to-app handoff'), h('div', { class: 'sub' }, ev.exists ? [ev.files + ' event file' + (ev.files === 1 ? '' : 's'), ' ', ev.encrypted ? h('span', { class: 'pill' }, 'encrypted') : h('span', { class: 'pill' }, 'plain')] : 'No events yet. Turn on the dayGLANCE integration in lastGLANCE and dayGLANCE (Setup tab).'), ev.waitingToBeFixed ? h('div', { class: 'sub' }, ev.waitingToBeFixed + ' waiting for a filename fix') : null));
+  root.append(g);
+  if (s.roster?.length) root.append(h('h2', {}, 'Household'), h('div', { class: 'card' }, s.roster.map((u) => h('span', { class: 'pill' }, u.name + ' · ' + u.source))));
+  root.append(h('div', { class: 'sub', style: 'margin-top:14px' }, h('button', { class: 'act', onclick: renderOverview }, 'Refresh'), ' Updates itself every 20 seconds.'));
+}
+
+async function renderSetup() {
+  const s = await api('/setup'); const root = $('#setup'); root.replaceChildren();
+  root.append(h('h2', {}, 'Checklist'), h('div', { class: 'card' }, s.checklist.map((c) => h('div', { class: 'todo' }, h('span', { class: 'dot ' + (c.ok ? 'ok' : 'warn'), style: 'margin-top:7px' }), h('div', {}, h('div', { class: 't' }, c.label), c.detail ? h('div', { class: 'sub' }, c.detail) : null)))));
+  const c = s.connect; const hint = 'set GATEWAY_TOKEN to show this';
+  root.append(h('h2', {}, 'Connect your agent'), h('div', { class: 'card' }, kv('MCP URL', c.mcpUrl), kv('Token', c.token, hint), kv('REST', c.restUrl), kv('CalDAV', c.caldavUrl), h('div', { class: 'sub' }, 'Claude Code:'), h('pre', {}, s.snippets.claudeCode), copyBtn(s.snippets.claudeCode)));
+  root.append(h('h2', {}, 'GLANCE apps: Cloud Sync, once per device'), h('div', { class: 'card' },
+    h('div', { class: 'sub' }, 'Provider: Generic WebDAV. dayGLANCE: Settings, Sync. lastGLANCE: Cloud Sync. lifeGLANCE: sync. Desktop apps ask you to allow a LAN address once.'),
+    kv('URL', c.syncUrl), kv('Username', c.syncUser), kv('Password', c.syncPassword, hint), kv('dayGLANCE folder', c.syncFolder), kv('lastGLANCE / lifeGLANCE folder', 'leave the default'),
+    kv('Encryption', c.passphraseSet ? 'on, with your sync passphrase (it is set on the gateway)' : 'set GLANCE_SYNC_PASSPHRASE first'),
+    h('div', { class: 'sub', style: 'margin-top:8px' }, 'Chore handoff (lastGLANCE to dayGLANCE) is a second setting in each app: lastGLANCE Settings, Integrations, dayGLANCE Integration; dayGLANCE Settings, Integrations, WebDAV event log. Same URL and login, events folder ', h('code', {}, c.intentsFolder), '; turn on "Encrypt intent files" and enter the passphrase once.')));
+  root.append(h('h2', {}, 'Omi'), h('div', { class: 'card' }, h('div', { class: 'sub' }, 'Add to omi-host/.env on the Omi machine, then restart Omi. To let this gateway read Omi back, set the Omi address and key on the Settings tab.'), h('pre', {}, s.snippets.omiHost), copyBtn(s.snippets.omiHost)));
+}
+
+async function renderSettings(message) {
+  const s = await api('/config'); const root = $('#settings'); root.replaceChildren();
+  const groups = [...new Set(s.settings.map((x) => x.group))]; const inputs = {};
+  const status = h('div', { class: 'sub', id: 'saved' }, message || '');
+  for (const gname of groups) {
+    root.append(h('h2', {}, gname));
+    const box = h('div', { class: 'card' });
+    for (const f of s.settings.filter((x) => x.group === gname)) {
+      let input;
+      if (f.type === 'bool') { input = h('label', { class: 'switch' }, h('input', { type: 'checkbox', checked: String(f.value) === 'true' }), h('span')); inputs[f.key] = () => ($('input', input).checked ? 'true' : 'false'); }
+      else if (f.type === 'enum') { input = h('select', {}, f.options.map((o) => h('option', { value: o, selected: o === f.value }, o))); inputs[f.key] = () => input.value; }
+      else if (f.type === 'secret') { input = h('input', { type: 'password', placeholder: f.set ? 'set: leave blank to keep' : 'not set', autocomplete: 'off' }); const clr = h('label', { class: 'sub' }, h('input', { type: 'checkbox' }), ' clear'); inputs[f.key] = () => (clr.firstChild.checked ? '' : input.value === '' ? null : input.value); input = h('span', {}, input, ' ', f.set ? clr : null); }
+      else { input = h('input', { type: 'text', value: f.value ?? '', placeholder: f.def || '' }); inputs[f.key] = () => input.value; }
+      box.append(h('div', { class: 'field' }, h('div', { class: 'top' }, h('div', {}, h('b', {}, f.label), ' ', f.source === 'admin' ? h('span', { class: 'pill' }, 'set here') : f.source === 'env' ? h('span', { class: 'pill' }, 'from .env.allglance') : null), input), f.help ? h('div', { class: 'help' }, f.help) : null));
+    }
+    root.append(box);
+  }
+  // Only what the user actually changed is sent, so untouched fields keep following .env.allglance.
+  const initial = {}; for (const [k, get] of Object.entries(inputs)) initial[k] = get();
+  const save = h('button', { class: 'act primary', onclick: async () => {
+    const patch = {}; for (const [k, get] of Object.entries(inputs)) { const v = get(); if (v !== null && v !== initial[k]) patch[k] = v; }
+    try {
+      const r = await api('/config', { method: 'PUT', body: JSON.stringify(patch) });
+      if (!r.changed.length) { status.textContent = 'Nothing changed.'; return; }
+      await renderSettings(h('span', {}, `Saved ${r.changed.length} change${r.changed.length === 1 ? '' : 's'}. `, s.restartAvailable ? h('button', { class: 'act', onclick: restartNow }, 'Restart the gateway to apply') : 'Restart the container to apply.'));
+    } catch (e) { status.textContent = e.message; status.style.color = 'var(--bad)'; }
+  } }, 'Save');
+  root.append(h('div', { style: 'margin-top:14px;display:flex;gap:12px;align-items:center;flex-wrap:wrap' }, save, status));
+  root.append(h('div', { class: 'sub', style: 'margin-top:12px' }, 'Saved to ', h('code', {}, s.file), '. A value saved here wins over the same variable in .env.allglance; clear it to go back to .env.allglance. Ports, tokens and data paths stay in .env.allglance.'));
+  const omi = h('button', { class: 'act', onclick: async () => { try { const r = await api('/test/omi', { method: 'POST' }); out.textContent = r.ok ? 'Omi answered.' : 'Omi: ' + (r.error || 'not reachable'); } catch (e) { out.textContent = e.message; } } }, 'Test Omi');
+  const out = h('span', { class: 'sub' }); root.append(h('div', { style: 'margin-top:10px' }, omi, ' ', out));
+}
+async function restartNow() {
+  try { await api('/restart', { method: 'POST' }); } catch (e) { $('#saved').textContent = e.message; return; }
+  $('#saved').textContent = 'Restarting...';
+  await new Promise((r) => setTimeout(r, 2500));
+  for (let i = 0; i < 40; i++) { try { const r = await fetch('/health'); if (r.ok) { await renderSettings('Back up with the new settings.'); return; } } catch {} await new Promise((r) => setTimeout(r, 1500)); }
+  $('#saved').textContent = 'Still restarting: check the container logs.';
+}
+
+const RENDER = { overview: renderOverview, setup: renderSetup, settings: renderSettings };
+function show(tab) { $('#' + tab).replaceChildren(h('div', { class: 'sub' }, 'Loading...')); for (const b of document.querySelectorAll('nav button')) b.setAttribute('aria-selected', String(b.dataset.tab === tab)); for (const k of Object.keys(RENDER)) $('#' + k).classList.toggle('hide', k !== tab); RENDER[tab]().catch((e) => { if (e.message !== 'auth') $('#' + tab).replaceChildren(h('div', { class: 'banner bad' }, e.message)); }); try { location.hash = tab; } catch {} }
+let timer;
+function start() { $('#app').classList.remove('hide'); for (const b of document.querySelectorAll('nav button')) b.onclick = () => show(b.dataset.tab); const t = (location.hash || '#overview').slice(1); show(RENDER[t] ? t : 'overview'); clearInterval(timer); timer = setInterval(() => { if (!document.hidden && !$('#overview').classList.contains('hide')) renderOverview().catch(() => {}); }, 20000); }
+api('/status').then(() => start()).catch((e) => { if (e.message !== 'auth') showGate(e.message); });
+</script>
+</body>
+</html>

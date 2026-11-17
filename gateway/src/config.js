@@ -5,6 +5,12 @@
 // (service names as hostnames). Override via .env or the container
 // environment (e.g. Unraid appdata config).
 
+import { applyOverrides } from './adminSettings.js';
+
+// Settings saved on the admin page (/admin) win over the environment. Applied before anything
+// below reads process.env.
+applyOverrides(process.env.ALLGLANCE_ADMIN_CONFIG || '/data/admin-config.json');
+
 function env(name, fallback) {
   const v = process.env[name];
   return v === undefined || v === '' ? fallback : v;

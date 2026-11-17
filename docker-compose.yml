@@ -120,7 +120,12 @@ services:
 
   # --- lastglance ---
   lastglance:
-    image: ghcr.io/krelltunez/lastglance:${LASTGLANCE_IMAGE_TAG:-2.14.0}
+    # v3.2.0 is not published to ghcr yet (3.1.1 is), so until it is this builds the same
+    # release from the apps/lastglance submodule (scripts/setup.sh fetches it; a few minutes
+    # the first time). Once ghcr has the tag, delete the `build:` block and compose pulls it.
+    build:
+      context: ./apps/lastglance
+    image: ghcr.io/krelltunez/lastglance:${LASTGLANCE_IMAGE_TAG:-3.2.0}
     container_name: allglance-lastglance
     restart: unless-stopped
     ports:

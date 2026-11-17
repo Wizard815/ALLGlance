@@ -89,7 +89,12 @@ cmd_bump() {
 
   echo "==> $name: $(pinned_tag "$path") -> $tag"
   if ! image_exists "$image" "$ver"; then
-    echo "ghcr.io/$image:$ver does not exist (yet); refusing to bump compose to a missing image." >&2; exit 1
+    if [[ "${ALLOW_UNPUBLISHED:-}" == 1 ]]; then
+      echo "note: ghcr.io/$image:$ver is not published; the compose service must build it from the submodule (see docker-compose.yml)." >&2
+    else
+      echo "ghcr.io/$image:$ver does not exist (yet); refusing to bump compose to a missing image." >&2
+      echo "(set ALLOW_UNPUBLISHED=1 if the compose service builds it from the submodule)" >&2; exit 1
+    fi
   fi
 
   git submodule update --init --depth 1 "$path" >/dev/null 2>&1 || true
