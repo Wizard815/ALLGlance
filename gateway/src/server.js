@@ -9,6 +9,7 @@ import config, { enabledAdapters } from './config.js';
 import Gateway from './gateway.js';
 import { createCaldavProxy } from './caldavProxy.js';
 import { createMcpRouter } from './mcp/server.js';
+import { createAdminRouter } from './admin.js';
 import DayglanceMcpClient from './transport/DayglanceMcpClient.js';
 
 import { timingSafeEqual } from 'node:crypto';
@@ -82,6 +83,13 @@ function buildServer() {
   } else {
     console.warn('[gateway] GATEWAY_TOKEN is not set: /api/allglance and /mcp are open to anyone who can reach this port');
   }
+
+  // The admin page (/admin) and its API; the API uses the same token as everything else.
+  app.use(createAdminRouter({
+    gateway, config,
+    settingsFile: process.env.ALLGLANCE_ADMIN_CONFIG || '/data/admin-config.json',
+    guard: config.server.token ? requireToken(config.server.token) : undefined,
+  }));
 
   // REST gateway routes.
   gateway.registerRoutes(app);

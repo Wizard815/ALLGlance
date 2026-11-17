@@ -83,7 +83,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     { name: 'sync', cmd: process.env.WEBDAV_BIN ?? '/usr/local/bin/webdav', args: ['--config', process.env.WEBDAV_CONFIG ?? '/app/webdav.yml'] },
     { name: 'sync-guard', cmd: node, args: ['src/syncGuard.js'] },
     { name: 'dayglance-mcp', cmd: node, args: ['container-mcp/index.mjs'], env: { DAYGLANCE_MCP_BIND: '127.0.0.1' } },
-    { name: 'gateway', cmd: node, args: ['src/server.js'], env: { SYNC_WEBDAV_PORT: process.env.SYNC_WEBDAV_PORT ?? '6065' } },
+    { name: 'gateway', cmd: node, args: ['src/server.js'], env: { ALLGLANCE_SUPERVISED: '1', SYNC_WEBDAV_PORT: process.env.SYNC_WEBDAV_PORT ?? '6065' } },
   ]);
   const shutdown = async (sig) => { console.log(`[supervisor] ${sig}: stopping`); await stop(); process.exit(0); };
   process.on('SIGTERM', () => shutdown('SIGTERM'));

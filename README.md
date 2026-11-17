@@ -55,7 +55,7 @@ from one place.
 | `vikunja` | `3457` | Task/calendar manager (web UI, CalDAV, REST `/api/v2/`) |
 | `glance-vault` | `8088` | **Optional, off by default** (`--profile vault`): zero-knowledge sync backend for the browser apps; nothing here needs it |
 | `dayglance` | `6767` | dayGLANCE web build |
-| `lastglance` | `3000` | lastGLANCE web build (chores) |
+| `lastglance` | `3000` | lastGLANCE web build (chores); built from the `apps/lastglance` submodule until v3.2.0 is on ghcr (`setup.sh` fetches it) |
 | `lifeglance` | `6868` | lifeGLANCE web build (milestones) |
 
 ## The one MCP / REST surface
@@ -237,6 +237,23 @@ curl -s -X POST http://localhost:8090/api/allglance/tasks -H "Authorization: Bea
 
 You should get a `201` with the task, and see it in Vikunja at `http://<host>:3457`
 (log in with the user `setup.sh` printed). Delete it there; the gateway deliberately cannot delete tasks.
+
+### The admin page
+
+Open `http://<host>:8090/admin` and enter the gateway token (it is in `.env.allglance`, and
+`setup.sh` prints it). Three tabs:
+
+- **Overview:** is each app connected, when did each app last sync (and is the file encrypted),
+  is the WebDAV server answering, are handoff events flowing. It refreshes itself.
+- **Setup:** a checklist of what is still missing, with the exact values to type into each GLANCE
+  app, the MCP URL and token for your agent (with a ready `claude mcp add` line), and the lines to
+  paste into Omi's `.env`. Everything has a Copy button.
+- **Settings:** switch apps on and off, set the Omi address and key, choose the Vikunja and Omi tool
+  sets, set the default project. Changes are saved to `/data/admin-config.json` and win over the
+  same variable in `.env.allglance`; **Restart the gateway** applies them (a few seconds). Ports,
+  tokens and data paths stay in `.env.allglance`.
+
+Without a `GATEWAY_TOKEN` the page still opens on a private network but shows no passwords or tokens.
 
 ### 4. Connect your agent
 

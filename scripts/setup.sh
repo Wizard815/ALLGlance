@@ -76,6 +76,12 @@ if [[ -z "$(get GLANCE_SYNC_PASSPHRASE)" ]]; then
   fi
 fi
 
+# lastGLANCE is built from its submodule until its current release is on ghcr (docker-compose.yml).
+if grep -q 'context: ./apps/lastglance' docker-compose.yml && [[ ! -f apps/lastglance/Dockerfile ]]; then
+  say "Fetching the lastGLANCE source (built into an image below)"
+  git submodule update --init --depth 1 apps/lastglance || { echo "could not fetch apps/lastglance; clone with --recurse-submodules or remove the build: block for lastglance in docker-compose.yml" >&2; exit 1; }
+fi
+
 # --- 2. data directories -----------------------------------------------------
 say "Data directories"
 DATA=$(get ALLGLANCE_DATA)
