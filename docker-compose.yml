@@ -128,7 +128,7 @@ services:
 
   # --- lifeGLANCE ---
   lifeglance:
-    image: ghcr.io/krelltunez/lifeglance:${LIFEGLANCE_IMAGE_TAG:-3.6.0}
+    image: ghcr.io/krelltunez/lifeglance:${LIFEGLANCE_IMAGE_TAG:-5.1.0}
     container_name: allglance-lifeglance
     restart: unless-stopped
     ports:
