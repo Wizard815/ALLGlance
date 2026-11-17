@@ -79,21 +79,23 @@ const copyBtn = (text) => { const b = h('button', { class: 'copy', type: 'button
 const kv = (label, value, secretHint) => h('div', { class: 'row' }, h('label', {}, label), h('div', { class: 'val' }, value == null || value === '' ? (secretHint || 'not set') : String(value)), value ? copyBtn(String(value)) : h('span'));
 
 const APPS = { vikunja: 'Vikunja', dayglance: 'dayGLANCE', lastglance: 'lastGLANCE', lifeglance: 'lifeGLANCE', omi: 'Omi' };
+let PASSPHRASE = false;
 function card(name, ad, file, extra = []) {
-  const ok = ad?.ok; const dot = h('span', { class: 'dot ' + (ok ? 'ok' : 'bad') });
+  const ok = ad?.ok; const waiting = file && !file.exists; const dot = h('span', { class: 'dot ' + (!ok ? 'bad' : waiting ? 'warn' : 'ok') });
   const lines = [];
   if (ad && !ok) lines.push(h('div', { class: 'sub', style: 'color:var(--bad)' }, ad.error || 'Not reachable'));
   if (ok && name === 'vikunja') lines.push(h('div', { class: 'sub' }, ad.authenticated ? 'API token accepted' : 'No API token: read-only'));
   if (ok && ad.mode) lines.push(h('div', { class: 'sub' }, 'Reads via ' + ad.mode));
   if (ok && ad.mcpTools != null) lines.push(h('div', { class: 'sub' }, ad.mcpTools + ' Omi tools exposed'));
-  if (file) lines.push(h('div', { class: 'sub' }, file.exists ? ['Last synced ', h('b', {}, ago(file.modified)), ' ', file.encrypted ? h('span', { class: 'pill' }, 'encrypted') : h('span', { class: 'pill' }, 'plain')] : 'Waiting for the first sync from the app'));
+  if (file) lines.push(h('div', { class: 'sub' }, file.exists ? ['Last synced ', h('b', {}, ago(file.modified)), ' ', file.encrypted ? h('span', { class: 'pill' }, 'encrypted') : h('span', { class: 'pill', style: PASSPHRASE ? 'color:var(--warn)' : '' }, PASSPHRASE ? 'not encrypted: turn on encryption in the app' : 'plain')] : 'Waiting for the first sync from the app'));
   return h('div', { class: 'card' }, h('h3', {}, dot, APPS[name] || name), lines, extra);
 }
 
 async function renderOverview() {
   const s = await api('/status'); const root = $('#overview'); root.replaceChildren();
-  $('#meta').textContent = 'v' + s.version + ' · up ' + dur(s.uptimeSeconds);
-  const bad = Object.entries(s.adapters).filter(([, a]) => !a.ok).map(([n]) => APPS[n] || n);
+  PASSPHRASE = s.passphraseSet; $('#meta').textContent = 'v' + s.version + ' · up ' + dur(s.uptimeSeconds);
+  const waiting = (n) => ['dayglance', 'lastglance', 'lifeglance'].includes(n) && s.files[n] && !s.files[n].exists;
+  const bad = Object.entries(s.adapters).filter(([n, a]) => !a.ok || waiting(n)).map(([n]) => APPS[n] || n);
   if (bad.length) root.append(h('div', { class: 'banner' }, 'Needs attention: ' + bad.join(', ') + '. See the Setup tab for what each one needs.'));
   const g = h('div', { class: 'grid' });
   for (const n of ['vikunja', 'dayglance', 'lastglance', 'lifeglance', 'omi']) if (s.adapters[n]) g.append(card(n, s.adapters[n], s.files[n]));

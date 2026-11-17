@@ -48,6 +48,7 @@ docker compose version >/dev/null 2>&1 || { echo "docker compose (v2) is require
 say "Environment"
 [[ -f "$ENV_FILE" ]] || { cp gateway/.env.example "$ENV_FILE"; chmod 600 "$ENV_FILE"; echo "created $ENV_FILE"; }
 fill VIKUNJA_SERVICE_SECRET "$(rand 48)"
+fill DAYGLANCE_SYNC_USER glance
 fill DAYGLANCE_SYNC_PASSWORD "$(rand 24)"
 fill DAYGLANCE_MCP_TOKEN "$(rand 40)"
 fill GATEWAY_TOKEN "$(rand 40)"
