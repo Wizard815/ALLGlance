@@ -90,7 +90,7 @@ export function createAdminRouter({ gateway, config, settingsFile, guard = (_q, 
       const ok = await fetch(`http://127.0.0.1:${process.env.SYNC_WEBDAV_PORT}/`, { method: 'OPTIONS', signal: AbortSignal.timeout(2000) }).then(() => true, () => false);
       sync = { ok };
     }
-    res.json({ version: VERSION, uptimeSeconds: Math.round((Date.now() - STARTED) / 1000), adapters: health.adapters, roster: health.roster, syncServer: sync, files: await snapshots(), supervised });
+    res.json({ version: VERSION, uptimeSeconds: Math.round((Date.now() - STARTED) / 1000), adapters: health.adapters, roster: health.roster, syncServer: sync, files: await snapshots(), supervised, passphraseSet: Boolean(config.sync.passphrase) });
   });
 
   api.get('/setup', async (req, res) => {
