@@ -51,7 +51,7 @@ from one place.
 
 | Service | Port | What it is |
 |---|---|---|
-| **`allglance`** (one container) | `8090`, `8091` | **8090:** the one MCP (`/mcp`) + REST (`/api/allglance/`) + CalDAV (`/dav`) front door. **8091:** the WebDAV sync server your apps sync to. Inside it, supervised: the gateway, the dayGLANCE MCP (loopback only) and the WebDAV server |
+| **`allglance`** (one container) | `8090`, `8091` | **8090:** the one MCP (`/mcp`) + REST (`/api/allglance/`) + CalDAV (`/dav`) front door. **8091:** the WebDAV sync server your apps sync to (a guard in front of it enforces `If-Match`, so a stale device cannot overwrite a newer file). Inside it, supervised: the gateway, the dayGLANCE MCP (loopback only), the guard and the WebDAV server |
 | `vikunja` | `3457` | Task/calendar manager (web UI, CalDAV, REST `/api/v2/`) |
 | `glance-vault` | `8088` | **Optional, off by default** (`--profile vault`): zero-knowledge sync backend for the browser apps; nothing here needs it |
 | `dayglance` | `6767` | dayGLANCE web build |
@@ -444,7 +444,7 @@ intents both **unencrypted and encrypted** (same passphrase; the first app to
 enable it creates `intents-encryption-salt.json` in the events folder and the
 other derives its key from it; the chore title is not readable on the server).
 The **return path** also works: ticking the task in dayGLANCE logs the chore as
-done in lastGLANCE. That needed a workaround: dayGLANCE 5.11 names completion
+done in lastGLANCE. That needed a workaround: dayGLANCE (5.11 through 5.15) names completion
 events `<uuid>.json`, which the shared intents library (and so lastGLANCE)
 ignores, so the container renames such files in the events folder to the
 timestamped form (`DAYGLANCE_EVENTS_ROOT`, see `eventNormalizer.mjs`). Remove it

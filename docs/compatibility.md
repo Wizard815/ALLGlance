@@ -7,7 +7,7 @@ What ALLGlance was checked against, and what was found. Re-run the checks after 
 
 | Component | In this stack | Latest | Result |
 |---|---|---|---|
-| dayGLANCE | v5.11.0 | v5.15.0 | The synced file format and encryption are unchanged (shared `@glance-apps/sync` 2.3.0 -> 2.4.0 only touches the vault engine, not the file tier). Intents `@glance-apps/intents` 1.4.0 -> 1.5.0 is additive; the completion-event UUID filename bug is still there, so `eventNormalizer.mjs` stays. **Not a drop-in bump of the pin:** 5.15 moved its MCP model into `packages/dayglance-mcp` and its frame code into agenda-core, so `container-mcp/scripts/vendor-model.mjs` fails (`src/utils/frameInstances.js` is gone) and the vendoring has to be redone first. A 5.15 app still syncs to this stack: the container MCP edits only the four task slices and passes every other field through |
+| dayGLANCE | **v5.15.0** (was v5.11.0) | v5.15.0 | Moved to 5.15 on 2026-11-17. The synced file format and encryption are unchanged (shared `@glance-apps/sync` 2.4.0 only touches the vault engine). Intents `@glance-apps/intents` 1.5.0 is additive; the completion-event UUID filename bug is still there, so `eventNormalizer.mjs` stays. 5.12 moved the MCP read model into `packages/dayglance-mcp` (state is now built with `buildMcpReadState`), so `vendor-model.mjs` was rewritten for the new layout and the server builds its read state that way. Checked live in the rebuilt image: a 5.15-shaped snapshot (routines, frames, areas, an unknown future slice) was read through the agent tools, a task created through MCP landed in the file with the unknown slice untouched |
 | lastGLANCE | v2.14.0 | v3.2.0 | Sync adapter and data model unchanged (chores, categories, completion events, users), so the gateway still reads it. **The `3.2.0` image is not published yet** (`3.1.1` is, `3.0.0` is not), so `scripts/upstream.sh bump lastglance` correctly refuses |
 | lifeGLANCE | v3.6.0 | v5.1.0 | The payload keeps `lives.default.milestones`; v5 only adds `lifeRecords`, `relationships` and a `writers` stamp, which the gateway ignores. Image `5.1.0` exists |
 | Vikunja | v2.8.0 | v2.8.0 | Current. `main` is ahead but unreleased |
@@ -17,14 +17,19 @@ What ALLGlance was checked against, and what was found. Re-run the checks after 
 
 ## Not checked
 
-- The three new web images could not be pulled in the check environment (blob downloads were
+- The new lastGLANCE / lifeGLANCE / dayGLANCE web images could not be pulled in the check environment (blob downloads were
   blocked), so no real browser sync was run against them. The conclusions above come from the
   upstream source and the shared libraries' changelogs and diffs.
 - Nothing was run on an Unraid host, a phone or the desktop apps.
 
-## Known gap, not caused by any upgrade
+## Sync server: conditional writes
 
-The WebDAV server (hacdias/webdav) ignores `If-Match` on `PUT`: a write with a stale ETag is
-accepted. `If-None-Match` (the `304` the apps use to skip unchanged polls) works. The apps also
-check client-side that a write follows a read, so a lost update needs two devices to sync in the
-same moment.
+hacdias/webdav ignores `If-Match` on `PUT`, so a device uploading from an out-of-date read would
+silently overwrite a newer file. The `allglance` container now runs a small guard in front of it
+(`gateway/src/syncGuard.js`, on :6065; the WebDAV server moved to internal :6066) that enforces
+`If-Match` and `If-None-Match` on PUT / DELETE / MOVE with a `412`, one write at a time per file,
+and passes everything else straight through (including the `304` the apps use to skip unchanged
+polls). Checked against the real server: stale `If-Match` and repeated `If-None-Match: *` are
+refused, the current ETag is accepted, and a device holding the ETag from before an MCP write is
+refused afterwards. Writers that bypass it (the gateway/MCP replacing the file on disk) change the
+ETag, which is what makes the next stale device upload fail.

@@ -24,8 +24,8 @@
 // frame reported here carries read_only: true, the same flag device calendar
 // events and routines carry.
 
-import { frameInstancesForDate } from './frameInstances.js';
-import { computeAvailableSlots } from './dayOccupancy.js';
+import { frameInstancesForDate, computeAvailableSlots, shiftDateStr } from '../agenda-core/index.js';
+import { rowsForDate } from './dayRows.js';
 
 export const FRAME_ID_PREFIX = 'frame-';
 
@@ -67,12 +67,11 @@ export function toFrameObject(instance, availableSlots) {
  * Frames for one date, each with its free slots.
  *
  * THE TASK LIST IS UNFILTERED HERE, and that is the point of taking it as an
- * argument. In the app, frame availability is computed from getTasksForDate,
- * which applies the user's active TAG FILTER by default: hide a tag in the
- * sidebar and the app reports more free time than exists. That is dubious in
- * the UI and would be plainly wrong over MCP, where an assistant's view of
- * the day would silently depend on a view preference it cannot see and the
- * user has forgotten about. The renderer passes the whole day.
+ * argument. Over MCP an assistant's view of the day must not silently depend
+ * on a view preference it cannot see and the user has forgotten about, so the
+ * renderer passes the whole day. The app now does the same: its calendar
+ * filter (tags and hidden projects) is display-only, and frame availability
+ * reads the unfiltered day (src/hooks/useDayReads.js).
  *
  * `frames` must arrive already scoped to the current user: frames carry
  * ownerSyncId, which isVisibleForUser does not understand (see the ownership
@@ -80,8 +79,9 @@ export function toFrameObject(instance, availableSlots) {
  */
 export function buildFrames(state, date, { includeNative = false } = {}) {
   // There is no global frames toggle in dayGLANCE; `enabled` is per template
-  // and frameInstancesForDate already honours it.
-  const { frames = [] } = state ?? {};
+  // and frameInstancesForDate already honours it, as it honours frame sets
+  // (#2305): a frame in a set switched off on `date` is not reported.
+  const { frames = [], frameSets } = state ?? {};
   if (!date) return [];
 
   // Device calendar events follow the CONSENT TIER, not merely what would be
@@ -92,15 +92,26 @@ export function buildFrames(state, date, { includeNative = false } = {}) {
   // comparing free time against the blocks it CAN see could infer both the
   // existence and the span of every hidden event. Availability therefore
   // describes exactly the data the tier permits, no more.
-  const dayTasks = (state?.tasks ?? [])
-    .filter((t) => t.date === date)
-    .filter((t) => (includeNative ? true : !t._native));
+  //
+  // The rows are the ones get_day lists as blocks (dayRows.js): visible
+  // tasks and the date's recurring occurrences, each with that date's
+  // exception, as the app's own frame availability counts its expanded
+  // occurrences. A recurring meeting in a frame is busy time.
+  const rowsOn = (d) => {
+    const { concrete, recurring } = rowsForDate(state ?? {}, d, includeNative);
+    return [...concrete, ...recurring];
+  };
+  const dayTasks = rowsOn(date);
+  // The previous date's tasks and occurrences still running after midnight
+  // hold the start of this one (#2278), under the same consent tier.
+  const prevDayTasks = rowsOn(shiftDateStr(date, -1));
 
-  return frameInstancesForDate(frames, date).map((instance) => toFrameObject(
+  return frameInstancesForDate(frames, date, { frameSets }).map((instance) => toFrameObject(
     instance,
     computeAvailableSlots(instance, {
       state,
       tasks: dayTasks,
+      prevDayTasks,
       dateStr: date,
       todayStr: state?.todayDate ?? '',
       nowMinutes: typeof state?.nowMinutes === 'number' ? state.nowMinutes : 0,

@@ -2,7 +2,8 @@
 //
 // One container, three services, each its own process so a crash in one cannot
 // take down the others:
-//   sync           the WebDAV server the GLANCE apps sync to (hacdias/webdav)
+//   sync           the WebDAV server the GLANCE apps sync to (hacdias/webdav, internal :6066)
+//   sync-guard     :6065, in front of it: enforces If-Match / If-None-Match on writes
 //   dayglance-mcp  dayGLANCE's MCP, serving the app's data + the intent-event fixer
 //   gateway        the front door: MCP, REST and CalDAV
 //
@@ -80,6 +81,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const node = process.execPath;
   const { stop } = supervise([
     { name: 'sync', cmd: process.env.WEBDAV_BIN ?? '/usr/local/bin/webdav', args: ['--config', process.env.WEBDAV_CONFIG ?? '/app/webdav.yml'] },
+    { name: 'sync-guard', cmd: node, args: ['src/syncGuard.js'] },
     { name: 'dayglance-mcp', cmd: node, args: ['container-mcp/index.mjs'], env: { DAYGLANCE_MCP_BIND: '127.0.0.1' } },
     { name: 'gateway', cmd: node, args: ['src/server.js'], env: { SYNC_WEBDAV_PORT: process.env.SYNC_WEBDAV_PORT ?? '6065' } },
   ]);

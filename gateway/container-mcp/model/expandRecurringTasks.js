@@ -4,7 +4,9 @@
 // same expansion the app renders with, not a stand-in for it. The range comes
 // from computeRecurringExpansionRange (recurringExpansionRange.js).
 
+import { overnightSpillMinutes, shiftDateStr } from './agenda-core/index.js';
 import { getOccurrencesInRange } from './recurrenceEngine.js';
+import { occurrenceSubtasks } from './recurringSubtasks.js';
 
 // The same occurrence shape is also used by read-only historical statistics.
 // Keeping this separate does not change which dates the live app expands.
@@ -23,7 +25,8 @@ export function recurringTaskInstance(template, date) {
     // but an instance can carry its own override when assigned "this only".
     assignedUserSyncIds: exception?.assignedUserSyncIds ?? template.assignedUserSyncIds,
     notes: template.notes || '',
-    subtasks: template.subtasks || [],
+    // The series' subtasks with this date's ticks (utils/recurringSubtasks.js).
+    subtasks: occurrenceSubtasks(template, date),
     // Energy-axis override is series-level (see setTaskEnergy); the
     // expansion is an explicit field list, so it must be carried here or
     // instances silently fall back to auto-derivation.
@@ -53,14 +56,21 @@ export function recurringTaskInstance(template, date) {
  */
 export function expandRecurringTasks(recurringTasks, { rangeStart, rangeEnd, today }) {
   const instances = [];
+  const yesterday = today ? shiftDateStr(today, -1) : null;
   for (const template of recurringTasks) {
     const occurrences = getOccurrencesInRange(template, rangeStart, rangeEnd);
     for (const dateStr of occurrences) {
       const completed = (template.completedDates || []).includes(dateStr);
       const exception = template.exceptions?.[dateStr];
-      // Don't show past uncompleted recurring instances (except all-day — those surface as overdue)
-      if (dateStr < today && !completed && !(exception?.isAllDay ?? template.isAllDay)) continue;
-      instances.push(recurringTaskInstance(template, dateStr));
+      const instance = recurringTaskInstance(template, dateStr);
+      // Don't show past uncompleted recurring instances (except all-day — those
+      // surface as overdue), nor one that started yesterday and ran past
+      // midnight: that one is still today's business until today ends (#2278).
+      // It draws its after-midnight piece on today's timeline and turns
+      // overdue at its real end (getOverdueTasks.js).
+      if (dateStr < today && !completed && !(exception?.isAllDay ?? template.isAllDay)
+        && !(dateStr === yesterday && overnightSpillMinutes(instance) > 0)) continue;
+      instances.push(instance);
     }
   }
   return instances;

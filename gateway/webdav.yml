@@ -2,8 +2,9 @@
 # run inside the single `allglance` container. The apps sync their data here; the
 # MCP and gateway read and write the same files from the same directory, so the
 # gateway always sees live app data with no manual export.
-address: 0.0.0.0
-port: 6065
+# Internal only: the sync guard (src/syncGuard.js) listens on :6065 and forwards here.
+address: 127.0.0.1
+port: 6066
 directory: /sync
 permissions: CRUD
 users:

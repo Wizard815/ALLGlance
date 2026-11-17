@@ -22,7 +22,7 @@ import http from 'node:http';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
-import { handleMcpRequest } from './model/mcpReadModel.js';
+import { handleMcpRequest, buildMcpReadState } from './model/dayglance-mcp/model.js';
 import { handleMcpWrite } from './model/mcpWriteModel.js';
 import { randomUUID } from 'node:crypto';
 import { createStateStore } from './state.mjs';
@@ -58,7 +58,13 @@ function buildServer(store, deps) {
   const ok = (data) => ({ content: [{ type: 'text', text: JSON.stringify(data) }], structuredContent: data });
   const err = (code, message) => ({ isError: true, content: [{ type: 'text', text: JSON.stringify({ error: { code, message } }) }] });
 
-  const readState = async () => (await store.get()).state;
+  // dayGLANCE 5.12+ answers reads over a state built from the synced slices for one user, on
+  // that user's clock (buildMcpReadState), not over the raw slices. No userSyncId: the gateway
+  // scopes by owner itself, so the container sees the whole household.
+  const readState = async () => {
+    const { state } = await store.get();
+    return buildMcpReadState(state, { now: Date.now(), timeZone: deps.timeZone(), userSyncId: null, weekStartDay: state.weekStartDay });
+  };
 
   const getDay = async (date) => {
     const state = await readState();

@@ -22,7 +22,7 @@
 // rejects _native explicitly — and none of this module touches localStorage,
 // so no day-planner-native-time-overrides entry can ever be written from it.
 
-import { parseRoutineBlockId, routineBlockId } from './mcpRoutines.js';
+import { parseRoutineBlockId, routineBlockId } from './agenda-core/index.js';
 import { findRoutineConflict, minutesToTime } from './dayOccupancy.js';
 import { completionTimestamp } from './taskUtils.js';
 import { createdTimestamp } from './createdAt.js';
@@ -36,8 +36,17 @@ const createdStamp = (nowIso) => createdTimestamp(nowIso ? new Date(nowIso) : ne
 // can close a Focus session. The sync merge compares stamps as instants.
 const offsetStampAt = (nowIso) => completionTimestamp(Number.isFinite(Date.parse(nowIso)) ? new Date(nowIso) : new Date());
 import { getProjectColor } from './colorUtils.js';
+import { isActiveProject } from './inboxProjectGroups.js';
+import { taskDefaultsOf, withTags, defaultSubtasks, defaultEnergy, baseDuration } from './projectTaskDefaults.js';
 import { getOccurrencesInRange } from './recurrenceEngine.js';
 import { applyRecurringInstanceEdit } from './recurringInstanceEdit.js';
+
+// Subtask ids for a created task's default checklist, derived from its id so
+// a replayed or doubly-applied create writes the same row.
+const subtaskIds = (taskId) => {
+  let i = 0;
+  return () => `${taskId}-st-${++i}`;
+};
 
 export const WRITE_ERROR_CODES = Object.freeze({
   NOT_FOUND: 'not_found',
@@ -68,6 +77,44 @@ const readOnlyGuard = (task, id) => {
   if (task?._native) return err(WRITE_ERROR_CODES.NATIVE_READONLY, NATIVE_MSG(id));
   if (isImportedEvent(task)) return err(WRITE_ERROR_CODES.CALENDAR_EVENT_READONLY, IMPORTED_MSG(id));
   return null;
+};
+
+/**
+ * An id that names no project. Every write that gives a task or a series a
+ * project answers this, creates included: a create that stored the id anyway
+ * left a task pointing at nothing, in no project's list and counted in no
+ * project's progress, while update_task refused the same id.
+ */
+const unknownProject = (projectId) => err(WRITE_ERROR_CODES.NOT_FOUND,
+  `No project with id ${JSON.stringify(projectId)}. Enumerate projects with dayglance_get_goal_progress`);
+
+/**
+ * A completed or archived project takes no new work (#2385). The app
+ * completes a project only once every task in it is done (projectCanComplete,
+ * goalProjectMutations.js), and its own project pickers and JOBO's follow-up
+ * offer neither kind (isActiveProject; openProject in jobo/carryForward.js).
+ * A write that checked existence alone put open tasks into a finished
+ * project: its progress fell from done to 0/N, its goal's with it, and the
+ * stray tasks were hard to find afterwards.
+ *
+ * Asked only when a write PUTS a task or a series into the project: an edit
+ * that names the project the task is already in changes nothing about its
+ * home and passes, as does a replay. An on-hold project is open and takes
+ * tasks, as the pickers offer it. Returns null for a project that is absent:
+ * the caller has already answered an unknown id with unknownProject.
+ */
+const closedProjectGuard = (project) => {
+  if (!project || isActiveProject(project)) return null;
+  const name = JSON.stringify(project.title ?? project.id);
+  if (project.status === 'completed') {
+    return err(WRITE_ERROR_CODES.VALIDATION,
+      `Project ${name} is completed, and a completed project takes no new tasks: dayGLANCE completes a project only ` +
+      'once every task in it is done. Reopen it first (dayglance_update_project with status "active"), or leave the ' +
+      'task out of the project.');
+  }
+  return err(WRITE_ERROR_CODES.VALIDATION,
+    `Project ${name} is archived, and an archived project takes no new tasks. Restoring it is a step the user takes ` +
+    'in dayGLANCE; until then, leave the task out of the project.');
 };
 
 /**
@@ -186,17 +233,34 @@ export function parseRecurringInstanceId(id) {
  * named, its assigned users — the copy-at-creation rule every UI create path
  * follows (ProjectCard/ProjectPlanner quick-add, the new-task modals). An
  * explicit assigneeSyncId wins over the project's users. An unknown projectId
- * inherits nothing and falls back to the default color.
+ * is not_found, as update_task answers it (unknownProject).
+ * A completed or archived project is refused (closedProjectGuard, #2385).
+ *
+ * The project's New task defaults (#2336, utils/projectTaskDefaults.js) fill
+ * what the call leaves out: its duration when none is given, its notes when
+ * none are, its #tags appended to the title, its checklist. The subtasks take
+ * ids derived from taskId, so a create applied twice (two devices draining
+ * one intent) writes the same row.
  *
  * Idempotent per the handleIntent.js:347-389 precedent (the one create-shaped
  * mutation-level dedup in the codebase): the caller derives `taskId`
  * deterministically from its idempotency key, so a replayed create finds the
  * id already present and returns the existing task unchanged.
  */
+/**
+ * The duration a create gives a task: the call's own (`given`), else the
+ * project's New task defaults, else the app's default task duration
+ * (`defaultDurationMinutes`, read by the caller: this module stays pure),
+ * else 30. The same for an inbox task, a scheduled one and a series.
+ */
+const createDuration = (given, projectDefaults, defaultDurationMinutes) => (typeof given === 'number'
+  ? given
+  : (projectDefaults.duration ?? baseDuration(defaultDurationMinutes)));
+
 export function applyCreateTask(state, {
   taskId, title, notes, projectId, assigneeSyncId,
   priority, deadline, durationMinutes, schedule, recurrence,
-  transitionId, nowIso,
+  defaultDurationMinutes, transitionId, nowIso,
 }) {
   const unscheduled = state.unscheduledTasks ?? [];
   const tasks = state.tasks ?? [];
@@ -224,7 +288,7 @@ export function applyCreateTask(state, {
 
   if (recurrence) {
     return createRecurringSeries(state, {
-      taskId, title: trimmed, notes, projectId, assignedUserSyncIds, schedule, recurrence, nowIso,
+      taskId, title: trimmed, notes, projectId, assignedUserSyncIds, schedule, recurrence, defaultDurationMinutes, nowIso,
     });
   }
 
@@ -236,21 +300,28 @@ export function applyCreateTask(state, {
     };
   }
 
-  const project = projectId ? (state.projects ?? []).find((p) => p.id === projectId) : undefined;
+  const project = projectId ? (state.projects ?? []).find((p) => p && p.id === projectId) : undefined;
+  // Both after the replay check above: a create that already landed answers
+  // with its task even if the project was completed or deleted since.
+  if (projectId && !project) return unknownProject(projectId);
+  const closedProject = closedProjectGuard(project);
+  if (closedProject) return closedProject;
   const parentGoal = project?.goalId ? (state.goals ?? []).find((g) => g.id === project.goalId) : undefined;
   if (!assignedUserSyncIds && project?.assignedUserSyncIds?.length) {
     assignedUserSyncIds = [...project.assignedUserSyncIds];
   }
 
+  const defaults = taskDefaultsOf(project);
   const base = {
     id: taskId,
-    title: trimmed,
-    duration: typeof durationMinutes === 'number' ? durationMinutes : 30,
+    title: withTags(trimmed, defaults.tags),
+    duration: createDuration(durationMinutes, defaults, defaultDurationMinutes),
     color: project ? getProjectColor(project, parentGoal) : 'bg-blue-500',
     completed: false,
     isAllDay: false,
-    notes: typeof notes === 'string' ? notes : '',
-    subtasks: [],
+    notes: typeof notes === 'string' && notes ? notes : (defaults.notes || ''),
+    subtasks: defaultSubtasks(defaults.subtasks, subtaskIds(taskId)),
+    ...defaultEnergy(defaults),
     ...(projectId ? { projectId } : {}),
     ...(assignedUserSyncIds ? { assignedUserSyncIds } : {}),
     ...(transitionId ? { transitionId } : {}),
@@ -261,13 +332,16 @@ export function applyCreateTask(state, {
   };
 
   if (schedule) {
+    // A schedule without a duration (the call gave none) takes the same
+    // default an inbox create does: the project's, else the app's.
+    const minutes = createDuration(schedule.durationMinutes, defaults, defaultDurationMinutes);
     // Placed directly on the calendar, so it can land on a routine exactly as
     // schedule_task can. Checked after the `existing` replay branch above: a
     // retry of a create that already succeeded must stay a no-op replay even
     // if a routine has since been placed over it.
     const conflict = routineConflictGuard(state, schedule.date, {
       startTime: schedule.startTime,
-      durationMinutes: schedule.durationMinutes,
+      durationMinutes: minutes,
       allDay: !!schedule.allDay,
     });
     if (conflict) return conflict;
@@ -276,7 +350,7 @@ export function applyCreateTask(state, {
       ...base,
       date: schedule.date,
       startTime: schedule.startTime,
-      duration: schedule.durationMinutes,
+      duration: minutes,
       isAllDay: !!schedule.allDay,
     };
     return { ok: true, replayed: false, unscheduledTasks: unscheduled, tasks: [...tasks, task], task, scheduled: true };
@@ -310,7 +384,7 @@ const DEFAULT_COLOR = 'bg-blue-500';
  * does not check them when a series is created in the editor.
  */
 function createRecurringSeries(state, {
-  taskId, title, notes, projectId, assignedUserSyncIds, schedule, recurrence, nowIso,
+  taskId, title, notes, projectId, assignedUserSyncIds, schedule, recurrence, defaultDurationMinutes, nowIso,
 }) {
   const recurring = state.recurringTasks ?? [];
   const existing = recurring.find((t) => String(t.id) === String(taskId));
@@ -319,21 +393,28 @@ function createRecurringSeries(state, {
   if (!schedule?.date) {
     return err(WRITE_ERROR_CODES.VALIDATION, 'A repeating task needs a start date: pass start with repeat.');
   }
-  const project = projectId ? (state.projects ?? []).find((p) => p.id === projectId) : undefined;
+  const project = projectId ? (state.projects ?? []).find((p) => p && p.id === projectId) : undefined;
+  if (projectId && !project) return unknownProject(projectId);
+  const closedProject = closedProjectGuard(project);
+  if (closedProject) return closedProject;
   const parentGoal = project?.goalId ? (state.goals ?? []).find((g) => g.id === project.goalId) : undefined;
   let users = assignedUserSyncIds;
   if (!users && project?.assignedUserSyncIds?.length) users = [...project.assignedUserSyncIds];
 
   const allDay = !!schedule.allDay;
+  // The project's New task defaults, as a one-off create takes them,
+  // duration included when the call names none.
+  const defaults = taskDefaultsOf(project);
   const template = {
     id: taskId,
-    title,
+    title: withTags(title, defaults.tags),
     startTime: allDay ? '00:00' : schedule.startTime,
-    duration: schedule.durationMinutes,
+    duration: createDuration(schedule.durationMinutes, defaults, defaultDurationMinutes),
     color: project ? getProjectColor(project, parentGoal) : DEFAULT_COLOR,
     isAllDay: allDay,
-    notes: typeof notes === 'string' ? notes : '',
-    subtasks: [],
+    notes: typeof notes === 'string' && notes ? notes : (defaults.notes || ''),
+    subtasks: defaultSubtasks(defaults.subtasks, subtaskIds(taskId)),
+    ...defaultEnergy(defaults),
     recurrence: { ...recurrence, startDate: schedule.date },
     completedDates: [],
     exceptions: {},
@@ -400,9 +481,13 @@ export function applyUpdateRecurringTask(state, { taskId, scope, set = {}, clear
     assignedUserSyncIds = [member.syncId ?? member.id];
   }
   if (clear.includes('assignee')) assignedUserSyncIds = [];
-  if (set.projectId !== undefined && !(state.projects ?? []).some((p) => p && p.id === set.projectId)) {
-    return err(WRITE_ERROR_CODES.NOT_FOUND,
-      `No project with id ${JSON.stringify(set.projectId)}. Enumerate projects with dayglance_get_goal_progress`);
+  if (set.projectId !== undefined) {
+    const project = (state.projects ?? []).find((p) => p && p.id === set.projectId);
+    if (!project) return unknownProject(set.projectId);
+    if (set.projectId !== template.projectId) {
+      const closedProject = closedProjectGuard(project);
+      if (closedProject) return closedProject;
+    }
   }
 
   const current = recurringTaskInstanceFields(template, parsed.dateStr);
@@ -495,7 +580,7 @@ function recurringTaskInstanceFields(template, dateStr) {
  * useDragDrop.js:468 stamps it; the deadline path predates it) so the
  * GLANCEintents emit correlates to the caller's idempotency key.
  */
-export function applyScheduleTask(state, { taskId, date, startTime, durationMinutes, transitionId, nowIso }) {
+export function applyScheduleTask(state, { taskId, date, startTime, durationMinutes, defaultDurationMinutes, transitionId, nowIso }) {
   const unscheduled = state.unscheduledTasks ?? [];
   const tasks = state.tasks ?? [];
 
@@ -517,9 +602,12 @@ export function applyScheduleTask(state, { taskId, date, startTime, durationMinu
   }
   if (task._native) return err(WRITE_ERROR_CODES.NATIVE_READONLY, NATIVE_MSG(taskId));
 
+  // The call's duration, else the task's own, else (a task that never had
+  // one) the app's default task duration, as the app's own drop gives it.
+  const minutes = durationMinutes ?? task.duration ?? baseDuration(defaultDurationMinutes);
   const scheduleConflict = routineConflictGuard(state, date, {
     startTime,
-    durationMinutes: durationMinutes ?? task.duration ?? 30,
+    durationMinutes: minutes,
   });
   if (scheduleConflict) return scheduleConflict;
 
@@ -528,7 +616,7 @@ export function applyScheduleTask(state, { taskId, date, startTime, durationMinu
     ...preserved,
     date,
     startTime,
-    duration: durationMinutes ?? task.duration ?? 30,
+    duration: minutes,
     isAllDay: false,
     ...(transitionId ? { transitionId } : {}),
     lastModified: nowIso,
@@ -629,9 +717,15 @@ export function applyUpdateTask(state, { taskId, set = {}, clear = [], transitio
   // id, or cleared. The record changes as the UI's project picker changes it,
   // projectId alone; the Obsidian placement pass reacts to the new home on
   // its own, exactly as it does to a UI reassignment.
-  if (set.projectId !== undefined && !(state.projects ?? []).some((p) => p && p.id === set.projectId)) {
-    return err(WRITE_ERROR_CODES.NOT_FOUND,
-      `No project with id ${JSON.stringify(set.projectId)}. Enumerate projects with dayglance_get_goal_progress`);
+  if (set.projectId !== undefined) {
+    const project = (state.projects ?? []).find((p) => p && p.id === set.projectId);
+    if (!project) return unknownProject(set.projectId);
+    // A move INTO a finished project is refused; naming the project the task
+    // is already in is not a move.
+    if (set.projectId !== task.projectId) {
+      const closedProject = closedProjectGuard(project);
+      if (closedProject) return closedProject;
+    }
   }
 
   if (task.transitionId && transitionId && task.transitionId === transitionId) {
@@ -854,7 +948,7 @@ export function applyUpdateSubtask(state, { taskId, subtaskId, set = {}, nowIso 
 
 /**
  * BULK UNDO (§4.3): apply a list of reversal ops produced by the main
- * process's write journal (electron/mcpJournal.ts buildUndoPlan). Ops arrive
+ * process's write journal (buildUndoPlan in @glance-apps/mcp-host). Ops arrive
  * in REVERSE chronological order, so compound histories unwind correctly:
  * create → schedule → move undoes as restore-fields → restore-to-inbox →
  * remove-created, each op finding exactly the state its write produced.

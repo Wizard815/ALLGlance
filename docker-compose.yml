@@ -105,7 +105,7 @@ services:
 
   # --- dayglance web build ---
   dayglance:
-    image: ghcr.io/krelltunez/dayglance:${DAYGLANCE_IMAGE_TAG:-5.11.0}
+    image: ghcr.io/krelltunez/dayglance:${DAYGLANCE_IMAGE_TAG:-5.15.0}
     container_name: allglance-dayglance
     restart: unless-stopped
     ports:
@@ -138,7 +138,8 @@ services:
   # Three supervised processes (see gateway/supervisor.mjs):
   #   gateway        :8090  the single front door: MCP + REST + CalDAV (/dav)
   #   dayglance-mcp  (loopback only)  dayGLANCE's data over MCP, plus the intent-event fixer
-  #   sync           :6065 (published as 8091)  the WebDAV server the GLANCE apps sync to
+  #   sync-guard     :6065 (published as 8091)  the front of the WebDAV server the GLANCE apps sync to:
+#                  enforces If-Match / If-None-Match, then forwards to the WebDAV server (internal :6066)
   # The apps sync their data (and intents) to the WebDAV server; the MCP and the
   # gateway read and write those same files from the same /sync directory, so the
   # gateway always sees live app data and changes made through MCP flow back into

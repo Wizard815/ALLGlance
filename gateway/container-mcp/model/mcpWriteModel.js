@@ -1,5 +1,5 @@
 // Renderer-side dispatcher for MCP write requests (spec §10 Phase 3),
-// companion to mcpReadModel.js. Pure decisions live in taskMutations.js;
+// companion to the read model (@glance-apps/dayglance-mcp). Pure decisions live in taskMutations.js;
 // this module maps request methods onto them, applies the results through
 // the provided React setters, and shapes the §5.2 response (the resulting
 // entity state, via the same toBlock the read surface uses).
@@ -15,6 +15,11 @@
 // before-state, because this is the only place that still has it: the journal
 // in the main process records it, and bulk undo replays the ops back through
 // applyUndoOps. Replayed writes carry no descriptor (nothing changed).
+//
+// THE DEFAULT TASK DURATION (#2367) rides in `state.defaultTaskDuration`,
+// read per write by the bridge as retiredTaskIds is: a create or a schedule
+// the call gives no duration takes the project's New task defaults, else this,
+// as the app's own create paths do (taskMutations.js createDuration).
 //
 // RETIRED IDS RESOLVE TO THEIR SUCCESSOR (resolveMcpTaskId). A task id an MCP
 // client holds can stop naming anything while the task lives on: the Obsidian
@@ -41,11 +46,10 @@ import {
   applyCreateGoal, applyUpdateGoal, applyCreateProject, applyUpdateProject,
   applyGoalProjectUndoOps, GOAL_PROJECT_UNDO_KINDS,
 } from './goalProjectMutations.js';
-import { toBlock, inboxItem, goalItem, projectItem } from './mcpReadModel.js';
+import { toBlock, inboxItem, goalItem, projectItem, recurrenceToWire } from './dayglance-mcp/model.js';
 import { resolveRetirement } from './retiredTaskIds.js';
 import { recurringTaskInstance } from './expandRecurringTasks.js';
 import { getOccurrencesInRange } from './recurrenceEngine.js';
-import { recurrenceToWire } from './mcpRepeat.js';
 import { recordDeletedTaskTombstone } from './deletedTaskTombstones.js';
 
 const WRITE_METHODS = new Set([
@@ -131,7 +135,7 @@ function dispatchWrite(state, setters, method, params) {
 
   switch (method) {
     case 'create_task': {
-      const r = applyCreateTask(state, { ...params, nowIso });
+      const r = applyCreateTask(state, { ...params, defaultDurationMinutes: state.defaultTaskDuration, nowIso });
       if (!r.ok) return r;
       if (r.series) {
         // A repeating task (#2066) is one template in recurringTasks; its
@@ -168,7 +172,7 @@ function dispatchWrite(state, setters, method, params) {
       // deadline on the way to the calendar, so this snapshot is the only
       // faithful record of the inbox task.
       const beforeTask = (state.unscheduledTasks ?? []).find((t) => t.id === params.taskId);
-      const r = applyScheduleTask(state, { ...params, nowIso });
+      const r = applyScheduleTask(state, { ...params, defaultDurationMinutes: state.defaultTaskDuration, nowIso });
       if (!r.ok) return r;
       if (!r.replayed) {
         setters.setUnscheduledTasks(r.unscheduledTasks);
@@ -529,7 +533,7 @@ function beforeFields(entity, touched) {
 
 /** Storage keys → wire names for goal and project summaries. */
 export function entityFieldNames(touched) {
-  const names = { assignedUserSyncIds: 'assignees', areaId: 'area', goalId: 'goal', startDate: 'start_date', targetDate: 'target_date' };
+  const names = { assignedUserSyncIds: 'assignees', areaId: 'area', goalId: 'goal', startDate: 'start_date', targetDate: 'target_date', taskSort: 'task_order' };
   return (touched ?? []).map((key) => names[key] ?? key);
 }
 

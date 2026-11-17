@@ -35,7 +35,8 @@ latest_tag() {
 }
 
 pinned_tag() { # tag the submodule is checked out at ("?" if it is not exactly on a tag)
-  git -C "$1" describe --tags --exact-match 2>/dev/null || echo "?"
+  # A commit can carry several tags (dayGLANCE 5.15 also has agenda-core@0.2.3): take the release one.
+  git -C "$1" tag --points-at HEAD 2>/dev/null | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 | grep . || echo "?"
 }
 
 compose_tag() { # default tag in docker-compose.yml: ${VAR:-x.y.z}
