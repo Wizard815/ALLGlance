@@ -118,6 +118,25 @@ async function renderSetup() {
     kv('Encryption', c.passphraseSet ? 'on, with your sync passphrase (it is set on the gateway)' : 'set GLANCE_SYNC_PASSPHRASE first'),
     h('div', { class: 'sub', style: 'margin-top:8px' }, 'Chore handoff (lastGLANCE to dayGLANCE) is a second setting in each app: lastGLANCE Settings, Integrations, dayGLANCE Integration; dayGLANCE Settings, Integrations, WebDAV event log. Same URL and login, events folder ', h('code', {}, c.intentsFolder), '; turn on "Encrypt intent files" and enter the passphrase once.')));
   root.append(h('h2', {}, 'Omi'), h('div', { class: 'card' }, h('div', { class: 'sub' }, 'Add to omi-host/.env on the Omi machine, then restart Omi. To let this gateway read Omi back, set the Omi address and key on the Settings tab.'), h('pre', {}, s.snippets.omiHost), copyBtn(s.snippets.omiHost)));
+  await renderTokens(root);
+}
+
+// Household and person tokens: see less than GATEWAY_TOKEN (README, Access). Made on the host, revoked here.
+async function renderTokens(root) {
+  const t = await api('/tokens'); const box = h('div', { class: 'card' });
+  root.append(h('h2', {}, 'Household and person tokens'), box);
+  box.append(h('div', { class: 'sub' }, 'A household token sees shared items and everyone\'s non-private ones. A person token also sees that person\'s private ones. Make one on the host; it is printed once:'));
+  const cmd = 'docker exec allglance node scripts/tokens.mjs add-household kitchen-tablet\ndocker exec allglance node scripts/tokens.mjs add-person <owner_id> <name>';
+  box.append(h('pre', {}, cmd), copyBtn(cmd));
+  if (!t.tokens.length) { box.append(h('div', { class: 'sub', style: 'margin-top:8px' }, 'None yet.')); return; }
+  for (const k of t.tokens) {
+    const who = k.kind === 'person' ? 'person: ' + k.owner_id + (k.also.length ? ' (also ' + k.also.join(', ') + ')' : '') : 'household';
+    const btn = h('button', { class: 'act', type: 'button', onclick: async () => {
+      if (!confirm('Revoke ' + k.name + '? Anything using it stops working at once.')) return;
+      try { await api('/tokens/' + encodeURIComponent(k.name), { method: 'DELETE' }); await renderSetup(); } catch (e) { btn.textContent = e.message; }
+    } }, 'Revoke');
+    box.append(h('div', { class: 'row' }, h('label', {}, k.name), h('div', { class: 'val' }, who + ' · made ' + k.created), btn));
+  }
 }
 
 async function renderSettings(message) {

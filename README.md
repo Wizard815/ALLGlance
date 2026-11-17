@@ -61,7 +61,7 @@ from one place.
 ## The one MCP / REST surface
 
 **MCP:** `POST /mcp` (Streamable HTTP, stateless: any number of clients, no
-session handshake state to lose). **One endpoint, ten tools**, kept few on
+session handshake state to lose). **One endpoint, eleven tools**, kept few on
 purpose so an agent can choose well.
 
 | Tool | Use it for | Source |
@@ -71,10 +71,11 @@ purpose so an agent can choose well.
 | `allglance_list_chores` | Recurring chores, last done, overdue | lastGLANCE |
 | `allglance_list_milestones` | Life-timeline events, optional date range | lifeGLANCE |
 | `allglance_list_users` | Turn a name into the `owner_id` the other tools take | all |
+| `allglance_whoami` | Which token this is: `admin`, `household` or `person` (see [Access](#access)) | the gateway |
 | `allglance_create_task` | New task: Vikunja (default) or dayGLANCE (scheduled or inbox) | Vikunja / dayGLANCE |
 | `allglance_update_task` | Done / rename / priority / due date / (dayGLANCE) schedule | Vikunja / dayGLANCE |
-| `vikunja_native_find_action` · `_do_action` · `_filter_syntax` | Anything else in Vikunja (labels, buckets, comments, filters) | Vikunja |
-| `omi_get_day_review` · `omi_get_daily_summaries` · `omi_get_conversations` · `omi_search_memories` · … | The wearable: what was said, remembered and decided (only with `OMI_URL` set; see `docs/integrations.md`) | Omi |
+| `vikunja_native_find_action` · `_do_action` · `_filter_syntax` | Anything else in Vikunja (labels, buckets, comments, filters). Admin token only | Vikunja |
+| `omi_get_day_review` · `omi_get_daily_summaries` · `omi_get_conversations` · `omi_search_memories` · … | The wearable: what was said, remembered and decided (only with `OMI_URL` set; see `docs/integrations.md`). Admin and the Omi owner's person token only | Omi |
 
 Design choices: results are **compact** (no raw app records; `source` + `id` go
 straight into `allglance_update_task`), lists have **filters and a default limit**
@@ -88,7 +89,7 @@ Vikunja's own tools if you want them (default `meta`: the three above).
 (`/api/v2/mcp`, generated from its OpenAPI spec). The gateway discovers it and
 re-exposes its discovery tools; `find_action` / `do_action` reach every other
 Vikunja action your token allows. The native tools are Vikunja's own and are
-**not owner-scoped**. They need an API token with the `mcp.access` permission
+**not owner-scoped**, so only the admin token gets them. They need an API token with the `mcp.access` permission
 (`scripts/setup.sh` creates one). Without it, or on Vikunja older than 2.7, they
 simply don't appear. Switch off with `ENABLE_VIKUNJA_MCP=false`.
 
@@ -118,6 +119,7 @@ dayglance_move_block · dayglance_resize_block · dayglance_set_task_completion
 **REST:** `/api/allglance/` mirrors the MCP tools for non-MCP clients.
 
 ```
+GET  /api/allglance/whoami                    → which token this is (see Access)
 GET  /api/allglance/users                     → family roster
 GET  /api/allglance/tasks?owner=<id>          → tasks across sources
 GET  /api/allglance/days/:date?owner=<id>     → blocks + tasks for a date
@@ -125,9 +127,9 @@ POST /api/allglance/tasks                     → create (vikunja)
 PATCH /api/allglance/tasks/:source/:id        → update {done, priority, title, due_date} (vikunja)
 GET  /api/allglance/chores?owner=<id>         → lastGLANCE chores
 GET  /api/allglance/milestones                → lifeGLANCE milestones
-GET  /api/allglance/vikunja/tasks             → vikunja tasks
-GET  /api/allglance/vikunja/projects          → vikunja projects
-PATCH /api/allglance/vikunja/tasks/:id        → update a vikunja task
+GET  /api/allglance/vikunja/tasks             → vikunja tasks (admin token only)
+GET  /api/allglance/vikunja/projects          → vikunja projects (admin token only)
+PATCH /api/allglance/vikunja/tasks/:id        → update a vikunja task (admin token only)
 GET  /health                                  → per-adapter health + roster
 ```
 
@@ -137,19 +139,73 @@ means the same for 0-3 (only inbox tasks have one). Apps that speak CalDAV use
 RFC 5545's PRIORITY (1 highest, 9 lowest); vikunja maps it as low 9,
 medium 5, high 3, urgent 2, do now 1, and `src/model.js` has the same mapping.
 
-**Access.** Set `GATEWAY_TOKEN` and every `/api/allglance/*` and `/mcp` call
-needs `Authorization: Bearer <token>` (`/health` stays open). Without it the
-gateway is open to anyone who can reach its port, and it says so on start.
-
 The "calendar" view **is** `/api/allglance/days/:date` — dayGLANCE's time blocks
 plus vikunja's tasks for that date come back together.
+
+### Access
+
+Every `/api/allglance/*` and `/mcp` call sends `Authorization: Bearer <token>`
+(`/health` stays open; `/dav` uses Vikunja's own login). There are three kinds of token:
+
+| Token | Sees | Made with |
+|---|---|---|
+| `GATEWAY_TOKEN` (admin) | Everything, private items included, plus `vikunja_native_*`, `omi_*` and `/api/allglance/vikunja/*` | `.env.allglance` |
+| household `alg_...` | Shared items and every member's non-private items. Never a private one | `scripts/tokens.mjs add-household` |
+| person `alg_...` | What household sees, plus that member's own private items | `scripts/tokens.mjs add-person` |
+
+Use a household token on a shared screen (a kitchen tablet, a family agent) and a person token
+on someone's own device. GATEWAY_TOKEN stays what Omi, Pondering Orb and your own agent use.
+
+Make, list and revoke scoped tokens inside the container. A new token is printed once; only
+its sha-256 is kept, in `/data/tokens.json` (`ALLGLANCE_TOKENS_FILE`; on the host that is
+`$ALLGLANCE_DATA/gateway/tokens.json`, outside git). Changes apply on the next request.
+
+```bash
+docker exec allglance node scripts/tokens.mjs add-household kitchen-tablet
+docker exec allglance node scripts/tokens.mjs add-person 3 dana-phone --also u-dana
+docker exec allglance node scripts/tokens.mjs list
+docker exec allglance node scripts/tokens.mjs revoke kitchen-tablet
+```
+
+`add-person` takes the member's `owner_id` from `GET /api/allglance/users`. Vikunja and
+dayGLANCE give the same person different ids (Vikunja: a number; dayGLANCE: its member id), so
+add the other one with `--also`, or that person will not see their private items in that app.
+The admin page's Setup tab lists the tokens and can revoke them.
+
+Check a token with `GET /api/allglance/whoami` (or the `allglance_whoami` tool):
+
+```json
+{ "scope": "person", "owner_id": "3", "also": ["u-dana"], "name": "dana-phone", "sees_private": "own", "omi": false }
+```
+
+`scope` is `admin`, `household` or `person`; `owner_id` is null unless `person`; `sees_private`
+is `all`, `none` or `own`; `omi` says whether the `omi_*` tools are there for this token.
+
+What a scoped token is refused, and what it gets instead:
+
+- Lists, `get_day`, chores and milestones simply leave out what it may not see. There is no
+  count of hidden items.
+- Changing someone else's private task answers `403` (MCP: an error) and changes nothing.
+  A household token may create tasks for anyone and change any non-private task.
+- A person token's new task is assigned to that person unless it names an `owner_id`.
+- `vikunja_native_*` and `/api/allglance/vikunja/*` read Vikunja directly and cannot hide
+  private tasks, so they are admin-only (`403`, or "only the admin token" over MCP).
+- `omi_*` and Omi's summary in `allglance_get_day` are one person's wearable: admin, and the
+  person token of `OMI_OWNER_ID`. Without `OMI_OWNER_ID`, admin only.
+- The roster (`allglance_list_users`, `/users`) is open to every token.
+- The admin page (`/admin`) takes only `GATEWAY_TOKEN`.
+
+Without `GATEWAY_TOKEN` the gateway is open to anyone who can reach its port, and says so on
+start. Scoped tokens then limit nothing: a caller can leave the token out and see everything.
+An unknown or revoked `alg_` token is always refused with `401`.
 
 ## Per-person scoping
 
 dayGLANCE owns the family identity: its `users[]` + `meUserSyncId` is the source
 of truth for "who is who." The gateway exposes that as `allglance_list_users`,
 and every task tool takes an optional `owner_id` to scope a call to one person
-("Dad's view") or leave it off for the shared family view.
+("Dad's view") or leave it off for the shared family view. `owner_id` only filters;
+it is the token that decides what is hidden (see [Access](#access)).
 
 Ownership survives where the transport carries it: vikunja tags tasks with
 `assigned_users`, dayGLANCE's local state carries `assignedUserSyncIds`, and the
@@ -157,6 +213,33 @@ browser-sync envelopes carry owner fields. One honest limit: dayGLANCE's **MCP**
 read blocks do not carry the assignee, so per-user filtering *over MCP* returns
 the full family day — ownership filtering is a property of the sources that
 expose it, not something the gateway can invent.
+
+### Private items
+
+Household and person tokens never see another member's private items. What marks an
+item private depends on the app:
+
+| App | Private when | Whose it is |
+|---|---|---|
+| Vikunja | It has a label titled `private` (any case; `PRIVATE_LABEL` changes the word), or it is in a project listed in `VIKUNJA_PRIVATE_PROJECTS` (`<project id>:<owner id>,...`) | Its assignees, plus that project's owner |
+| dayGLANCE | Its title has the tag `#private` (same word as above; `#privateer` does not count) | Its assignees |
+| lastGLANCE | Never: chores have no privacy marker | Everyone sees them |
+| lifeGLANCE | Never: milestones have no owner or marker | Everyone sees them |
+| Omi | Always: it is one person's wearable | `OMI_OWNER_ID` |
+
+What goes wrong:
+
+- A private item with no assignee belongs to nobody, so only the admin token sees it.
+  Assign it to its owner.
+- A dayGLANCE item over the MCP may arrive without its assignee; then it too is admin-only.
+- Before a household or person token changes a task, the gateway looks the task up to see
+  whose it is. Without dayGLANCE's synced file it only finds today's dayGLANCE items and the
+  inbox, so changing a task on another day is refused with "Could not find".
+- The label and the tag are the only markers. A word like "secret" in a title hides nothing.
+- A typo in `VIKUNJA_PRIVATE_PROJECTS` stops the gateway from starting, with the bad entry in
+  the log, rather than leaving a project unprotected.
+- CalDAV (`/dav`) is Vikunja's own login and is not filtered: anyone with a Vikunja login sees
+  what Vikunja shows them.
 
 ## Install guide
 
@@ -247,7 +330,8 @@ Open `http://<host>:8090/admin` and enter the gateway token (it is in `.env.allg
   is the WebDAV server answering, are handoff events flowing. It refreshes itself.
 - **Setup:** a checklist of what is still missing, with the exact values to type into each GLANCE
   app, the MCP URL and token for your agent (with a ready `claude mcp add` line), and the lines to
-  paste into Omi's `.env`. Everything has a Copy button.
+  paste into Omi's `.env`, and the household and person tokens (with Revoke). Everything has a
+  Copy button.
 - **Settings:** switch apps on and off, set the Omi address and key, choose the Vikunja and Omi tool
   sets, set the default project. Changes are saved to `/data/admin-config.json` and win over the
   same variable in `.env.allglance`; **Restart the gateway** applies them (a few seconds). Ports,
@@ -345,7 +429,8 @@ by themselves on their next interval; nothing needs repairing by hand.
 | `setup.sh`: Vikunja never healthy | `docker logs allglance-vikunja`. Usually the data folder is not writable by `99:100` (`chown -R 99:100 $ALLGLANCE_DATA`) |
 | `/health`: `dayglance` not ok, "no ... sync yet" | The app has not synced to the WebDAV server yet, or the URL/user/password/folder in the app differ from `.env.allglance` |
 | "Cannot decrypt ...: wrong DAYGLANCE_SYNC_PASSPHRASE" | The passphrase in `.env.allglance` differs from the one in the apps |
-| `401` from `/mcp` or `/api/allglance` | Missing or wrong `Authorization: Bearer <GATEWAY_TOKEN>` |
+| `401` from `/mcp` or `/api/allglance` | Missing or wrong `Authorization: Bearer <token>`, or the `alg_` token was revoked (`scripts/tokens.mjs list`) |
+| `403` "only the admin token" | A household or person token used an admin-only tool or route; use the `allglance_*` ones |
 | Build fails on a certificate error | Behind a TLS-intercepting proxy: see section 2 |
 | Build fails pulling `node` with `429` | Docker Hub rate limit: `docker login`, or pull the base image from a mirror |
 | Omi tasks do not appear | `ALLGLANCE_URL`/`ALLGLANCE_TOKEN`/`CALDAV_*` use the host address, not a container name; check the sync report on Omi's *Calendar & tasks* page |
@@ -499,7 +584,7 @@ not shown in Home Assistant's to-do UI.
 ```
 /mnt/user/appdata/allglance-data/      # ALLGLANCE_DATA; kept outside the git checkout
 ├── vikunja/{db,files,logs}
-├── gateway         # roster cache
+├── gateway         # roster cache, admin-config.json, tokens.json (scoped token hashes)
 ├── dayglance-sync  # the WebDAV root: dayglance/dayglance-sync.json, GLANCE/... (owned 99:100)
 └── glance-vault    # glancevault.db (owned 99:100)
 ```
@@ -515,7 +600,8 @@ AllGLANCE/
 │   ├── dayglance/  ├── lastglance/  └── lifeglance/
 ├── services/vikunja/     # vikunja source (git submodule)
 ├── gateway/              # the AllGLANCE gateway (MCP + REST) — our code
-│   ├── src/              #   model, roster, adapters, mcp server, entry
+│   ├── src/              #   model, roster, adapters, access (tokens), mcp server, entry
+│   ├── scripts/tokens.mjs #   household and person tokens
 │   ├── container-mcp/    #   container port of dayGLANCE's MCP — our code
 │   ├── DESIGN.md         #   design document
 │   └── Dockerfile

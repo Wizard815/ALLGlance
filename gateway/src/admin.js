@@ -13,6 +13,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findSnapshot } from './lib/syncSnapshot.js';
 import { SETTINGS, describe, saveOverrides } from './adminSettings.js';
+import { readTokens, revokeToken, describeTokens } from './access.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const PAGE = readFileSync(join(here, 'admin', 'index.html'), 'utf8');
@@ -57,7 +58,7 @@ async function fileInfo(path) {
 /**
  * @param {{ gateway: object, config: object, settingsFile: string, guard?: Function, restart?: () => void, fetchImpl?: Function }} deps
  */
-export function createAdminRouter({ gateway, config, settingsFile, guard = (_q, _s, n) => n(), restart = () => process.exit(0), supervised = Boolean(process.env.ALLGLANCE_SUPERVISED) }) {
+export function createAdminRouter({ gateway, config, settingsFile, tokensFile = config.access?.tokensFile, guard = (_q, _s, n) => n(), restart = () => process.exit(0), supervised = Boolean(process.env.ALLGLANCE_SUPERVISED) }) {
   const router = express.Router();
   const revealSecrets = Boolean(config.server.token);
 
@@ -166,6 +167,28 @@ export function createAdminRouter({ gateway, config, settingsFile, guard = (_q, 
     if (!supervised) return res.status(409).json({ error: 'Not running under the container supervisor: restart the container instead.' });
     res.status(202).json({ restarting: true });
     setTimeout(restart, 300);
+  });
+
+  // Scoped (household and person) tokens: list and revoke. New ones are made with
+  // scripts/tokens.mjs, which prints the token once; only hashes are kept, so none is shown here.
+  api.get('/tokens', (_req, res) => {
+    if (!tokensFile) return res.json({ file: null, tokens: [] });
+    try {
+      res.json({ file: tokensFile, tokens: describeTokens(readTokens(tokensFile)) });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  api.delete('/tokens/:name', (req, res) => {
+    if (!tokensFile) return res.status(404).json({ error: 'No token file is configured.' });
+    try {
+      const n = revokeToken(tokensFile, req.params.name);
+      if (!n) return res.status(404).json({ error: `No token named "${req.params.name}".` });
+      res.json({ revoked: req.params.name });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
   });
 
   api.post('/test/:what', async (req, res) => {

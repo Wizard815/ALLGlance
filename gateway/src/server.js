@@ -11,6 +11,7 @@ import { createCaldavProxy } from './caldavProxy.js';
 import { createMcpRouter } from './mcp/server.js';
 import { createAdminRouter } from './admin.js';
 import DayglanceMcpClient from './transport/DayglanceMcpClient.js';
+import { TokenStore, authenticate } from './access.js';
 
 import { timingSafeEqual } from 'node:crypto';
 
@@ -76,12 +77,16 @@ function buildServer() {
     res.json(out);
   });
 
-  // Optional bearer token for everything except /health. Without it anyone who
-  // can reach the port can read and create the family's tasks.
-  if (config.server.token) {
-    app.use(['/api/allglance', '/mcp'], requireToken(config.server.token));
-  } else {
+  // Bearer tokens for everything except /health: GATEWAY_TOKEN is admin; household and person
+  // alg_ tokens (scripts/tokens.mjs) see less. Without GATEWAY_TOKEN anyone who can reach the
+  // port can read and create the family's tasks, private ones included.
+  const tokens = new TokenStore(config.access.tokensFile);
+  app.use(['/api/allglance', '/mcp'], authenticate({ adminToken: config.server.token, store: tokens }));
+  if (!config.server.token) {
     console.warn('[gateway] GATEWAY_TOKEN is not set: /api/allglance and /mcp are open to anyone who can reach this port');
+    if (tokens.size()) console.warn('[gateway] scoped tokens exist but GATEWAY_TOKEN is not set: a caller can leave the token out and see everything, private items included');
+  } else {
+    console.log(`[gateway] ${tokens.size()} scoped token(s) in ${config.access.tokensFile}`);
   }
 
   // The admin page (/admin) and its API; the API uses the same token as everything else.
@@ -89,6 +94,7 @@ function buildServer() {
     gateway, config,
     settingsFile: process.env.ALLGLANCE_ADMIN_CONFIG || '/data/admin-config.json',
     guard: config.server.token ? requireToken(config.server.token) : undefined,
+    tokensFile: config.access.tokensFile,
   }));
 
   // REST gateway routes.

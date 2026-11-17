@@ -12,6 +12,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
+import { ADMIN } from '../access.js';
 
 /**
  * Build an AllGLANCE MCP server backed by a Gateway instance.
@@ -19,9 +20,10 @@ import {
  * @param {object} [opts]
  * @param {string} [opts.name='allglance']
  * @param {string} [opts.version='0.1.0']
+ * @param {object} [opts.scope] the caller (src/access.js); admin when left out
  */
 export function createAllglanceMcpServer(gateway, opts = {}) {
-  const { name = 'allglance', version = '0.1.0' } = opts;
+  const { name = 'allglance', version = '0.1.0', scope = ADMIN } = opts;
 
   const server = new Server(
     { name, version },
@@ -34,13 +36,11 @@ export function createAllglanceMcpServer(gateway, opts = {}) {
     }
   );
 
-  // Collect the tool metadata so the server can list + dispatch them.
-  const tools = gateway.registerMcpTools({
-    addTool: () => {},
-    registerTool: () => {},
-  });
+  // The tools as this caller sees them: their reads are filtered for the caller's scope, and
+  // the dynamic tools a scope may not use (vikunja_native_*, someone else's omi_*) are left out.
+  const tools = gateway.registerMcpTools(scope);
 
-  const dynamic = async () => (typeof gateway.dynamicMcpTools === 'function' ? gateway.dynamicMcpTools() : []);
+  const dynamic = async () => (typeof gateway.dynamicMcpTools === 'function' ? gateway.dynamicMcpTools(scope) : []);
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [...tools, ...(await dynamic())].map((t) => ({
@@ -55,8 +55,9 @@ export function createAllglanceMcpServer(gateway, opts = {}) {
     const { name: toolName, arguments: args } = request.params;
     const matched = tools.find((t) => t.name === toolName) ?? (await dynamic()).find((t) => t.name === toolName);
     if (!matched) {
+      const refusal = typeof gateway.toolRefusal === 'function' ? gateway.toolRefusal(String(toolName), scope) : null;
       return {
-        content: [{ type: 'text', text: `Unknown tool: ${toolName}` }],
+        content: [{ type: 'text', text: refusal ?? `Unknown tool: ${toolName}` }],
         isError: true,
       };
     }
@@ -89,7 +90,7 @@ export function createMcpRouter(gateway) {
 
   router.post('/mcp', async (req, res) => {
     try {
-      const { server } = createAllglanceMcpServer(gateway);
+      const { server } = createAllglanceMcpServer(gateway, { scope: req.scope ?? ADMIN });
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
       res.on('close', () => {
         transport.close().catch(() => {});

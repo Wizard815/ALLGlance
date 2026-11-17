@@ -2,7 +2,7 @@
 // covers all four apps, with descriptions written to help an agent choose.
 //
 //   read   allglance_get_day · allglance_list_tasks · allglance_list_chores ·
-//          allglance_list_milestones · allglance_list_users
+//          allglance_list_milestones · allglance_list_users · allglance_whoami
 //   write  allglance_create_task · allglance_update_task
 //   plus   vikunja_native_find_action / do_action / filter_syntax (Vikunja's own
 //          discovery tools, for anything the above cannot do)
@@ -10,6 +10,9 @@
 // Writes go to where the task lives: Vikunja (shared household tasks) or
 // dayGLANCE (the personal day plan, through its MCP). lastGLANCE and lifeGLANCE
 // are read-only here: their apps own that data.
+//
+// `gw` is the gateway as one caller sees it (Gateway.as(scope)): what a household or
+// person token may not see never reaches these handlers.
 
 import { compactTask, compactBlock, compactChore, compactMilestone, byDue, today } from './format.js';
 
@@ -130,6 +133,20 @@ export function buildTools(gw) {
       handler: async () => json({ users: await gw.refreshRoster() }),
     },
     {
+      name: 'allglance_whoami',
+      description:
+        'Say what this connection may see: scope "admin" (everything), "household" (shared items and everyone\'s non-private items) ' +
+        'or "person" (household plus their own private items, with their owner_id). Call it once to check the token is the one you expect. ' +
+        'To list the household members use allglance_list_users.',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      annotations: READ,
+      handler: async (args = {}) => {
+        const extra = Object.keys(args ?? {});
+        if (extra.length) bad(`allglance_whoami takes no arguments, got ${extra.join(', ')}.`, false);
+        return json(gw.whoami());
+      },
+    },
+    {
       name: 'allglance_create_task',
       description:
         'Create a task. Default source "vikunja": a shared household task in a Vikunja project (give due_date; optionally owner_id to assign someone). ' +
@@ -143,7 +160,7 @@ export function buildTools(gw) {
           source: { type: 'string', enum: ['vikunja', 'dayglance'], description: 'Default "vikunja".' },
           due_date: { type: 'string', description: `${DATE}. Vikunja due date, or a dayGLANCE inbox deadline.` },
           priority: { type: 'integer', minimum: 0, maximum: 5, description: '0 none, 1 low, 2 medium, 3 high, 4 urgent, 5 do now. dayGLANCE only has 0-3 (higher is capped) and only on inbox tasks: ignored when start is given.' },
-          owner_id: { type: 'string', description: 'Assign to this person (id from allglance_list_users): Vikunja assignee, or the dayGLANCE member the block belongs to.' },
+          owner_id: { type: 'string', description: 'Assign to this person (id from allglance_list_users): Vikunja assignee, or the dayGLANCE member the block belongs to. With a person token it defaults to that person.' },
           project: { type: ['string', 'integer'], description: 'Vikunja: project name or id. Defaults to the household default project (Inbox).' },
           start: { type: 'string', description: 'dayGLANCE: "YYYY-MM-DD HH:MM" to schedule it on the calendar (or "YYYY-MM-DD" with all_day).' },
           duration_minutes: { type: 'integer', description: 'dayGLANCE: length when scheduled. Default 30.' },

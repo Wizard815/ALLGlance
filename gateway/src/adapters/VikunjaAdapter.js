@@ -178,6 +178,19 @@ export class VikunjaAdapter extends BaseAdapter {
     return { tasks: owner ? tasks.filter((t) => t.owner_id === owner) : tasks };
   }
 
+  /** One task by id, with its labels and every assignee (the gateway checks privacy on it). */
+  async readTask(id) {
+    const taskId = Number(id);
+    if (!taskId) throw new Error('task id must be a number');
+    const t = await fetchJson(`${this.#baseUrl}/api/v2/tasks/${taskId}`, { headers: this.#auth(), timeoutMs: 10000 });
+    if (!t?.id) return null;
+    const first = (t.assignees ?? [])[0]?.id;
+    return taskOf('vikunja', {
+      ...t,
+      due_date: t.due_date && !t.due_date.startsWith('0001') ? t.due_date : null,
+    }, first != null ? String(first) : null);
+  }
+
   /** Create a task in vikunja. Returns the canonical task or null on failure. */
   /**
    * Resolve the project a new task goes in: a numeric id, a project NAME

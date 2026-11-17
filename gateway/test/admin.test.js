@@ -142,3 +142,26 @@ test('restart only under the supervisor; test endpoint reports a dead app', asyn
   plain.close();
   assert.equal(r.status, 409);
 });
+
+test('tokens: listed without hashes, revoked from the page; GATEWAY_TOKEN still guards it', async () => {
+  const { issueToken, readTokens } = await import('../src/access.js');
+  const tokensFile = join(dir, 'tokens.json');
+  const { token } = issueToken(tokensFile, { kind: 'person', name: 'sam', owner_id: '2', also: ['u-sam'] });
+  issueToken(tokensFile, { kind: 'household', name: 'kitchen' });
+  const app = express();
+  app.use(createAdminRouter({ gateway: fakeGateway, config: { server: { token: 'tok123' }, sync: { dir }, vikunja: {}, omi: {} }, settingsFile: join(dir, 'cfg2.json'), tokensFile, guard: requireToken('tok123') }));
+  const srv = await new Promise((r) => { const s = app.listen(0, '127.0.0.1', () => r(s)); });
+  const at = `http://127.0.0.1:${srv.address().port}/admin/api/tokens`;
+  try {
+    assert.equal((await fetch(at, { headers: { authorization: `Bearer ${token}` } })).status, 401, 'a scoped token cannot manage tokens');
+    const listed = await (await fetch(at, { headers: { authorization: 'Bearer tok123' } })).json();
+    assert.deepEqual(listed.tokens.map((t) => [t.name, t.kind, t.owner_id, t.also]), [['sam', 'person', '2', ['u-sam']], ['kitchen', 'household', null, []]]);
+    assert.equal(JSON.stringify(listed).includes('hash'), false);
+    const del = (name) => fetch(`${at}/${name}`, { method: 'DELETE', headers: { authorization: 'Bearer tok123' } });
+    assert.equal((await del('kitchen')).status, 200);
+    assert.equal((await del('kitchen')).status, 404);
+    assert.deepEqual(readTokens(tokensFile).map((t) => t.name), ['sam']);
+  } finally {
+    srv.close();
+  }
+});

@@ -8,6 +8,10 @@ Basic auth, 404 on MKCALENDAR, one calendar per project), on one port, in memory
 Tasks created over REST appear as VTODOs in their project's calendar and VTODOs PUT over
 CalDAV appear as REST tasks, which is what Vikunja does. Only what the gateway and Omi use
 is modelled; see the handlers for the exact subset.
+
+Assignees: POST /api/v2/tasks/<id>/assignees {user_id} assigns one of USERS, and tasks list
+them in `assignees`, as Vikunja does. Labels: for seeding tests, a create body may carry
+`labels: [{"title": "private"}]` (real Vikunja attaches labels with a separate call).
 """
 
 import argparse
@@ -21,6 +25,8 @@ from urllib.parse import urlparse
 from xml.sax.saxutils import escape
 
 PROJECTS = [{'id': 1, 'title': 'Inbox', 'is_archived': False}, {'id': 2, 'title': 'Family', 'is_archived': False}]
+USERS = {1: {'id': 1, 'username': 'omi', 'name': 'Omi Tester'}, 2: {'id': 2, 'username': 'sam', 'name': 'Sam'},
+         3: {'id': 3, 'username': 'dana', 'name': 'Dana'}}
 TASKS = {}  # id -> task dict (REST shape) + '_ics' (CalDAV object text) + '_name' (object file name)
 LOCK = threading.Lock()
 STATE = {'next_id': 1, 'user': 'omi', 'password': 'pw', 'token': 'tok', 'log': []}
@@ -204,7 +210,8 @@ class Handler(BaseHTTPRequestHandler):
                 STATE['next_id'] += 1
                 t = {'id': tid, 'title': data.get('title', ''), 'description': data.get('description', ''),
                      'done': False, 'done_at': ZERO, 'due_date': data.get('due_date') or ZERO, 'priority': int(data.get('priority') or 0),
-                     'project_id': pid, '_uid': f'{tid}-vikunja@fake', '_name': f'{tid}-vikunja.ics'}
+                     'project_id': pid, '_uid': f'{tid}-vikunja@fake', '_name': f'{tid}-vikunja.ics',
+                     'labels': [{'id': i + 1, 'title': str(l.get('title', ''))} for i, l in enumerate(data.get('labels') or [])]}
                 TASKS[tid] = t
                 return self.send(201, rest_task(t))
             if m_task and self.command == 'GET':
@@ -224,8 +231,15 @@ class Handler(BaseHTTPRequestHandler):
                 t.pop('_ics', None)
                 t['_etag'] = (t.get('_etag', 0) or 0) + 1
                 return self.send(200, rest_task(t))
-            if re.fullmatch(r'/api/v2/tasks/\d+/assignees', path):
-                return self.send(201, {})
+            m_assign = re.fullmatch(r'/api/v2/tasks/(\d+)/assignees', path)
+            if m_assign and self.command == 'POST':
+                t = TASKS.get(int(m_assign.group(1)))
+                user = USERS.get(int(json.loads(self.body() or b'{}').get('user_id') or 0))
+                if not t or not user:
+                    return self.send(404, {'message': 'no such task or user'})
+                if all(a['id'] != user['id'] for a in t.setdefault('assignees', [])):
+                    t['assignees'].append(dict(user))
+                return self.send(201, dict(user))
         self.send(404, {'message': f'unmodelled {self.command} {path}'})
 
     # ---- CalDAV (what backend/utils/caldav/client.py does against Vikunja) ---------------
