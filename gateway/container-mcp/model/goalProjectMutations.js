@@ -25,6 +25,8 @@
 import { TASK_COLORS, PROJECT_FALLBACK_COLOR } from './colorUtils.js';
 import { noteLinkOf } from './obsidianProjectNotes.js';
 import { WRITE_ERROR_CODES } from './taskMutations.js';
+import { seedTaskDefaults } from './projectTaskDefaults.js';
+import { TASK_SORT_DEADLINE } from './projectOrder.js';
 
 const err = (code, message) => ({ ok: false, error: { code, message } });
 
@@ -185,7 +187,7 @@ export function applyUpdateGoal(state, { goalId, set = {}, clear = [], nowIso })
  * the goal's colour and assignees at creation (ProjectForm's inheritance),
  * and never follows them afterwards.
  */
-export function applyCreateProject(state, { projectId, title, goalId, description, targetDate, assigneeSyncIds, nowIso }) {
+export function applyCreateProject(state, { projectId, title, goalId, description, targetDate, taskOrder, assigneeSyncIds, nowIso }) {
   const trimmed = typeof title === 'string' ? title.trim() : '';
   if (!trimmed) return err(WRITE_ERROR_CODES.VALIDATION, 'title must be a non-empty string');
   const existing = (state.projects ?? []).find((p) => p && p.id === projectId);
@@ -200,6 +202,10 @@ export function applyCreateProject(state, { projectId, title, goalId, descriptio
   const assignees = resolveAssignees(state, assigneeSyncIds);
   if (!assignees.ok) return assignees;
   const inherited = assignees.ids ?? (goal?.assignedUserSyncIds?.length ? [...goal.assignedUserSyncIds] : undefined);
+  // The New task defaults its goal (else the goal's area) holds for new
+  // projects, copied as the project form copies them (projectTaskDefaults.js).
+  const area = goal?.areaId ? (state.areas ?? []).find((a) => a && a.id === goal.areaId) : null;
+  const taskDefaults = goal ? seedTaskDefaults(goal, area) : undefined;
 
   const project = {
     id: projectId,
@@ -211,7 +217,11 @@ export function applyCreateProject(state, { projectId, title, goalId, descriptio
     // The project's own target date, validated in the main process (dates
     // strict YYYY-MM-DD) exactly like the goal tools' target_date.
     ...(targetDate ? { targetDate } : {}),
+    // The order of its unscheduled tasks (#2394): the field for deadlines
+    // first, no field for the manual order, as the project form saves it.
+    ...(taskOrder === 'deadline' ? { taskSort: TASK_SORT_DEADLINE } : {}),
     ...(inherited?.length ? { assignedUserSyncIds: inherited } : {}),
+    ...(taskDefaults ? { taskDefaults } : {}),
     createdAt: nowIso,
     updatedAt: nowIso,
   };
@@ -225,8 +235,10 @@ export function applyUpdateProject(state, { projectId, set = {}, clear = [], now
 
   if (set.status !== undefined) {
     if (set.status === 'archived') return err(WRITE_ERROR_CODES.VALIDATION, ARCHIVE_MSG('project'));
-    if (set.status !== 'active' && set.status !== 'completed') {
-      return err(WRITE_ERROR_CODES.VALIDATION, `status must be "active" or "completed", got ${JSON.stringify(set.status)}`);
+    // On hold (utils/projectStatus.js) is a project's own status: paused, not
+    // done and not put away, so it is open to an assistant as the form offers it.
+    if (set.status !== 'active' && set.status !== 'on-hold' && set.status !== 'completed') {
+      return err(WRITE_ERROR_CODES.VALIDATION, `status must be "active", "on-hold" or "completed", got ${JSON.stringify(set.status)}`);
     }
     if (set.status === 'completed' && project.status !== 'completed'
       && !projectCanComplete(projectId, state.tasks, state.unscheduledTasks)) {
@@ -256,6 +268,9 @@ export function applyUpdateProject(state, { projectId, set = {}, clear = [], now
   if (goal) { next.goalId = goal.id; touch('goalId'); }
   if (set.targetDate !== undefined) { next.targetDate = set.targetDate; touch('targetDate'); }
   if (set.status !== undefined) { next.status = set.status; touch('status'); }
+  // 'manual' removes the field, as the form and the Planner's toggle do.
+  if (set.taskOrder === 'deadline') { next.taskSort = TASK_SORT_DEADLINE; touch('taskSort'); }
+  else if (set.taskOrder === 'manual') { delete next.taskSort; touch('taskSort'); }
   if (assignees.ids !== undefined) { next.assignedUserSyncIds = assignees.ids; touch('assignedUserSyncIds'); }
   for (const field of clear) {
     if (field === 'description') { next.description = ''; touch('description'); }

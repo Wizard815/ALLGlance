@@ -12,11 +12,14 @@ provider later).
 ## What it reuses (not a reimplementation)
 
 `./model/` is dayGLANCE's **real** pure model, vendored verbatim from
-`apps/dayglance/src/utils` + `packages/agenda-core`:
+`apps/dayglance` (`node scripts/vendor-model.mjs`; the folder is rebuilt each run):
 
-- `mcpReadModel.js` — `handleMcpRequest(state, {method, params})` → `get_day`,
-  `get_week`, `list_unscheduled`, `list_users`, `goal_progress`
-- `mcpWriteModel.js` + `taskMutations.js` — `handleMcpWrite(state, setters, req)`
+- `dayglance-mcp/` (`packages/dayglance-mcp`, dayGLANCE 5.12+) — the read model:
+  `buildMcpReadState(slices, {now, timeZone, ...})` and `handleMcpRequest(state, {method, params})`
+  → `get_day`, `get_week`, `list_unscheduled`, `list_users`, `goal_progress`. Before 5.12 this
+  was `src/utils/mcpReadModel.js`
+- `mcpWriteModel.js` + `taskMutations.js` (`src/utils`) — `handleMcpWrite(state, setters, req)`
+- `agenda-core/`, `obsidian-format/`, two merge helpers from `dayglance-vault/`, and `mcp-host/dates.js`
 
 So tool output is **byte-identical** to the Electron MCP for the same state.
 

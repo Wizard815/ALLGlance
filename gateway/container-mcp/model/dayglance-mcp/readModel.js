@@ -1,28 +1,44 @@
 // Pure read models for the MCP tool surface (docs/mcp-server-spec.md §5.1),
 // following the trayFetchGate.js precedent from PR #1302: the React-coupled
-// part (src/hooks/useMcpBridge.js) stays a thin subscription, and every
-// decision that matters lives here, dependency-free and unit-tested.
+// part (the app's src/hooks/useMcpBridge.js) stays a thin subscription, and
+// every decision that matters lives here, dependency-free and unit-tested.
+// Formerly the app's src/utils/mcpReadModel.js; in this package so the desktop
+// app and a GLANCEvault-client host answer the same tools through the same
+// code (#2280).
 //
-// READ SOURCE: these functions take LIVE React state slices — what the user
-// sees in the main window right now — never localStorage. That is deliberate:
-// _native device-calendar events are never persisted (useDataPersistence.js
-// filters them out of every write), so a localStorage read could never include
-// them, and everything else would lag state by one commit for no benefit.
+// READ SOURCE: these functions take the state buildMcpReadState
+// (readState.js) assembles. In the app that is LIVE React state — what the
+// user sees in the main window right now — never localStorage. That is
+// deliberate: _native device-calendar events are never persisted
+// (useDataPersistence.js filters them out of every write), so a localStorage
+// read could never include them, and everything else would lag state by one
+// commit for no benefit. A host hands it its own reassembled copy.
 //
 // _native events (spec §5.1, revision 4): flagged with the distinct type
 // 'device_calendar_event' plus read_only: true in ALL output, and included
 // only when the caller (the Electron main process, which owns the consent
 // tier) asks for them via include_native. The tier decision never lives here.
 
-import { getOccurrencesInRange } from './recurrenceEngine.js';
-import { calculateGoalProgress } from './goalProgress.js';
-import { calculateProjectProgress } from './projectProgress.js';
-import { notBucketed, BUCKET_LIST_IDS, DEFAULT_BUCKET_CONFIG } from './bucketList.js';
-import { buildRoutineBlocks } from './mcpRoutines.js';
-import { buildFrames } from './mcpFrames.js';
-import { noteLinkOf } from './obsidianProjectNotes.js';
-import { recurrenceToWire } from './mcpRepeat.js';
-import { wireStamp } from './taskMetadata.js';
+import {
+  calculateGoalProgress,
+  calculateProjectProgress,
+  notBucketed,
+  BUCKET_LIST_IDS,
+  DEFAULT_BUCKET_CONFIG,
+  buildRoutineBlocks,
+  noteLinkOf,
+  continuationsFromPreviousDay,
+  shiftDateStr,
+  sortProjectInbox,
+  TASK_SORT_DEADLINE,
+} from '../agenda-core/index.js';
+import { buildFrames } from './frames.js';
+import { expandRecurringForDate, rowsForDate } from './dayRows.js';
+import { recurrenceToWire } from './repeat.js';
+import { wireStamp } from './wireStamp.js';
+import { wirePlanHistory } from './planHistory.js';
+
+export { expandRecurringForDate };
 
 /**
  * Subtasks on the wire (2026-10-04): the task's own checklist, in order,
@@ -43,8 +59,37 @@ function wireNote(entity) {
   return { path: link.path, name: link.name, missing: link.missing };
 }
 
-/** Inbox-item wire shape, shared by the inbox read and the write responses. */
-export function inboxItem(t) {
+/**
+ * Where a task came from, when another GLANCE app created it (a lastGLANCE
+ * chore sent here, a reach-out to a person): { app, id }, the app's short name
+ * ("lastglance") and the id there. Such a task reports its completion,
+ * reopening, rescheduling and deletion back to that app (useNotifyEmitter's
+ * shouldEmit: source_app and source_entity_id), so a reader can see that
+ * completing it here is completing it there too. Undefined otherwise.
+ *
+ * `kind` is added only where the id itself says it: a lastGLANCE birthday or
+ * date is `<date id>:<year>`, so it is "date". A chore and a person both have
+ * a plain id, and dayGLANCE keeps nothing that tells them apart (the create
+ * carries no kind, and the intents schema cannot take one without every
+ * released dayGLANCE refusing the create): lastglance_resolve_link answers
+ * for any id.
+ */
+const LASTGLANCE_DATE_ID = /^[^:]+:\d{4}$/;
+
+export function wireLink(t) {
+  if (!t?.source_app || !t?.source_entity_id) return undefined;
+  const app = String(t.source_app).replace(/^app\./, '');
+  const id = String(t.source_entity_id);
+  return app === 'lastglance' && LASTGLANCE_DATE_ID.test(id) ? { app, id, kind: 'date' } : { app, id };
+}
+
+/**
+ * Inbox-item wire shape, shared by the inbox read and the write responses.
+ * `timeZone` (an IANA name) is the zone created_at and completed_at are
+ * reported in; omitted, they are on this machine's clock, as the app reports
+ * them. A host on a server passes the user's.
+ */
+export function inboxItem(t, { timeZone } = {}) {
   const item = {
     id: t.id,
     type: 'task',
@@ -54,8 +99,12 @@ export function inboxItem(t) {
   };
   // When it was created and completed (#2135), null when not known: tasks
   // from before createdAt existed have none, and an open task no completion.
-  item.created_at = wireStamp(t.createdAt);
-  item.completed_at = t.completed ? wireStamp(t.completedAt) : null;
+  item.created_at = wireStamp(t.createdAt, timeZone);
+  item.completed_at = t.completed ? wireStamp(t.completedAt, timeZone) : null;
+  // Its plan history (original_plan, deferrals, plan_trail), each omitted
+  // when there is nothing to tell (planHistory.js). An inbox task keeps the
+  // history it gathered while it was scheduled.
+  Object.assign(item, wirePlanHistory(t, timeZone));
   if (t.deadline) item.deadline = t.deadline;
   if (t.projectId) item.project_id = t.projectId;
   if (t.notes) item.notes = t.notes;
@@ -63,6 +112,8 @@ export function inboxItem(t) {
   // can plan a slot before it schedules.
   if (typeof t.duration === 'number') item.duration_minutes = t.duration;
   if (t.assignedUserSyncIds?.length) item.assignee_id = t.assignedUserSyncIds[0];
+  const link = wireLink(t);
+  if (link) item.link = link;
   const subtasks = wireSubtasks(t);
   if (subtasks) item.subtasks = subtasks;
   return item;
@@ -96,7 +147,7 @@ export function buildBucketList(state) {
       items: unscheduledTasks
         .filter((t) => t && t.bucketId === id && !t.archived && isVisibleForUser(t))
         .map((t) => {
-          const { priority: _p, deadline: _d, ...item } = inboxItem(t);
+          const { priority: _p, deadline: _d, ...item } = inboxItem(t, { timeZone: state.timeZone });
           return { ...item, bucket_id: id };
         }),
     })),
@@ -125,8 +176,11 @@ export function isImportedEvent(task) {
   return !!task?.imported && !task.nativeEventId && !task.isTaskCalendar;
 }
 
-/** One scheduled block in tool output. Field names are snake_case wire names. */
-export function toBlock(task) {
+/**
+ * One scheduled block in tool output. Field names are snake_case wire names.
+ * `timeZone` as for inboxItem.
+ */
+export function toBlock(task, { timeZone } = {}) {
   const type = blockType(task);
   const block = {
     id: task.id,
@@ -142,8 +196,14 @@ export function toBlock(task) {
   // When a task was created and completed (#2135), as on inbox items. Not on
   // events or routines: they are not tasks dayGLANCE created or completes.
   if (type === 'task' || type === 'recurring_task') {
-    block.created_at = wireStamp(task.createdAt);
-    block.completed_at = task.completed ? wireStamp(task.completedAt) : null;
+    block.created_at = wireStamp(task.createdAt, timeZone);
+    block.completed_at = task.completed ? wireStamp(task.completedAt, timeZone) : null;
+    // And its plan history, on the same terms (planHistory.js). Not on
+    // events: a feed or the device calendar moves those, and the app keeps
+    // no history for them. A recurring occurrence carries none in practice:
+    // the app records it on one-off tasks, and an occurrence's moves are
+    // exceptions on its series (expandRecurringForDate copies no history).
+    Object.assign(block, wirePlanHistory(task, timeZone));
   }
   // Notes and subtasks ride the block too (2026-10-04): the inbox shape has
   // carried notes since Phase 2, and a scheduled task's notes are no less
@@ -157,6 +217,10 @@ export function toBlock(task) {
   // always said; the reads now say too.
   if (task.assignedUserSyncIds?.length) block.assignee_id = task.assignedUserSyncIds[0];
   if (task.isTaskCalendar) block.source = 'caldav_tasks';
+  // A task another GLANCE app created (a lastGLANCE chore): completing it here
+  // is reported back there (wireLink).
+  const link = wireLink(task);
+  if (link) block.link = link;
   // A recurring occurrence says which series it belongs to and how it repeats
   // (#2066), in the shape dayglance_update_recurring_task accepts back.
   if (type === 'recurring_task' && task.recurrence) {
@@ -172,58 +236,37 @@ export function toBlock(task) {
 }
 
 /**
- * Expand recurring templates into instances for ONE date. Mirrors the
- * App.jsx expansion (exception overrides per field) with one deliberate
- * difference: no "hide past uncompleted" rule — that is a UI display choice,
- * and an MCP read of a past day should report what was scheduled.
+ * A task from the previous date that runs past midnight, as a block on this
+ * date (#2278): the same task (same id, type and fields), placed at 00:00 for
+ * the minutes it still runs, and marked `continues_from: <the date it
+ * started>`. It occupies that time like any block. The task is the previous
+ * date's: its own block there is unchanged and carries the full duration, and
+ * a write targets it by its id as usual.
  */
-export function expandRecurringForDate(recurringTasks, date) {
-  const instances = [];
-  for (const template of recurringTasks ?? []) {
-    const occurrences = getOccurrencesInRange(template, date, date);
-    for (const dateStr of occurrences) {
-      if (dateStr !== date) continue;
-      const exception = template.exceptions?.[dateStr];
-      instances.push({
-        id: `recurring-${template.id}-${dateStr}`,
-        title: exception?.title ?? template.title,
-        startTime: exception?.startTime ?? template.startTime,
-        duration: exception?.duration ?? template.duration,
-        completed: (template.completedDates || []).includes(dateStr),
-        // The series' creation, and this date's completion, which the
-        // template keeps per date (#2135).
-        createdAt: template.createdAt,
-        completedAt: template.completedDatesTimestamps?.[dateStr],
-        isAllDay: exception?.isAllDay ?? template.isAllDay ?? false,
-        assignedUserSyncIds: exception?.assignedUserSyncIds ?? template.assignedUserSyncIds,
-        // Series-level, like assignment: the template owns it and every
-        // instance inherits it, so toBlock can emit project_id for a
-        // recurring block the same as for a concrete task.
-        projectId: template.projectId,
-        // Series-level as well: one set of notes for every occurrence.
-        notes: template.notes,
-        date: dateStr,
-        isRecurring: true,
-        recurringTemplateId: template.id,
-        recurrence: template.recurrence,
-      });
-    }
-  }
-  return instances;
+export function continuationBlock(continuation, date, { timeZone } = {}) {
+  return {
+    ...toBlock(continuation.task, { timeZone }),
+    date,
+    start_time: '00:00',
+    duration_minutes: continuation.minutes,
+    continues_from: continuation.fromDate,
+  };
 }
 
 /**
  * The blocks for one local calendar date: concrete tasks on that date,
  * recurring instances expanded for it, and (when include_native) device
- * calendar events. Sorted all-day first, then by wall-clock start.
+ * calendar events. Sorted all-day first, then by wall-clock start. A task
+ * from the previous date that runs past midnight leads the timed blocks as a
+ * continuation (continuationBlock).
  */
 export function buildDayBlocks(state, params) {
-  const { tasks = [], recurringTasks = [], isVisibleForUser = () => true } = state;
   const { date, include_native: includeNative = false } = params;
 
-  const onDate = tasks.filter((t) => t.date === date && isVisibleForUser(t));
-  const concrete = includeNative ? onDate : onDate.filter((t) => !t._native);
-  const recurring = expandRecurringForDate(recurringTasks, date).filter(isVisibleForUser);
+  const { concrete, recurring } = rowsForDate(state, date, includeNative);
+  const prev = rowsForDate(state, shiftDateStr(date, -1), includeNative);
+  const continuations = continuationsFromPreviousDay([...prev.concrete, ...prev.recurring])
+    .map((c) => continuationBlock(c, date, { timeZone: state.timeZone }));
 
   // Routines are already block-shaped and already owner-scoped (the renderer
   // passes the filtered list, since isVisibleForUser cannot judge them), so
@@ -238,7 +281,7 @@ export function buildDayBlocks(state, params) {
     const m = /^(\d{1,2}):(\d{2})$/.exec(hhmm ?? '');
     return m ? Number(m[1]) * 60 + Number(m[2]) : Number.MAX_SAFE_INTEGER;
   };
-  const blocks = [...concrete, ...recurring].map(toBlock).concat(routines).sort((a, b) => {
+  const blocks = continuations.concat([...concrete, ...recurring].map((t) => toBlock(t, { timeZone: state.timeZone }))).concat(routines).sort((a, b) => {
     if (a.all_day !== b.all_day) return a.all_day ? -1 : 1;
     return toMinutes(a.start_time) - toMinutes(b.start_time);
   });
@@ -289,7 +332,7 @@ export function buildWeek(state, params) {
 export function buildUnscheduledItems(state, filter = {}) {
   const { unscheduledTasks = [], isVisibleForUser = () => true } = state;
   // Filter selection over structural fields, resolved by the main process
-  // (electron/mcpInboxFilter.ts) and applied HERE, before the array crosses
+  // (inboxFilter.js, in the tool layer) and applied HERE, before the array crosses
   // IPC to paginate — so total/truncated/next_cursor are computed against
   // the filtered set by construction, never by post-filtering a page. The
   // predicates are the app's own: 'standalone' is the TRMNL inbox-count
@@ -297,7 +340,7 @@ export function buildUnscheduledItems(state, filter = {}) {
   const { scope = 'all', includeCompleted = true } = filter;
   return {
     // Bucket List items never appear in Inbox output — the unconditional
-    // exclusion utils/bucketList.js documents for EVERY consumer feeding
+    // exclusion bucketList.js (agenda-core) documents for EVERY consumer feeding
     // inbox lists or counts. This was the one consumer that missed the
     // invariant (bucket items leaked into MCP results). Unconditional by
     // design: not a scope value, not behind an argument — a caller wanting
@@ -307,9 +350,34 @@ export function buildUnscheduledItems(state, filter = {}) {
       .filter(isVisibleForUser)
       .filter((t) => (scope === 'standalone' ? !t.projectId : scope === 'project' ? !!t.projectId : true))
       .filter((t) => includeCompleted || !t.completed)
-      .map(inboxItem),
+      .map((t) => inboxItem(t, { timeZone: state.timeZone })),
   };
 }
+
+/**
+ * The rows project and goal progress are measured over: the user's visible
+ * tasks, scheduled and not. Device calendar events are left out: they are not
+ * completable dayGLANCE work and would dilute every percentage.
+ */
+function progressRows(state) {
+  const { tasks = [], unscheduledTasks = [], isVisibleForUser = () => true } = state;
+  return [...tasks, ...unscheduledTasks].filter(isVisibleForUser).filter((t) => !t._native);
+}
+
+/**
+ * Of those rows, the ones a project's tasks_done and tasks_total count, the
+ * same test calculateProjectProgress applies. buildProjectTasks lists exactly
+ * this set, so a client can reconcile the counters task by task (#2393).
+ */
+const inProject = (projectId) => (t) => t.projectId === projectId && !t.archived;
+
+/**
+ * How a project orders its unscheduled tasks, on the wire (#2394): 'deadline'
+ * (dated tasks first, soonest first, the rest as the user dragged them) or
+ * 'manual' (the dragged order alone). Always present: it is a mode, and a
+ * reader that never sees the key cannot know there is one to set.
+ */
+export const projectTaskOrder = (project) => (project?.taskSort === TASK_SORT_DEADLINE ? 'deadline' : 'manual');
 
 /**
  * A project as the goal tree reports it (2026-10-04: the record's own fields
@@ -318,7 +386,7 @@ export function buildUnscheduledItems(state, filter = {}) {
  * section and the record is empty, which `obsidian_note` tells the reader.
  */
 export function projectItem(p, progressTasks = []) {
-  const projectTasks = progressTasks.filter((t) => t.projectId === p.id && !t.archived);
+  const projectTasks = progressTasks.filter(inProject(p.id));
   const progress = calculateProjectProgress(p.id, progressTasks);
   const item = {
     id: p.id,
@@ -331,6 +399,7 @@ export function projectItem(p, progressTasks = []) {
     progress_percent: progress === null ? null : Math.round(progress * 100),
     tasks_done: projectTasks.filter((t) => t.completed).length,
     tasks_total: projectTasks.length,
+    task_order: projectTaskOrder(p),
   };
   if (p.goalId) item.goal_id = p.goalId;
   if (p.assignedUserSyncIds?.length) item.assignee_ids = [...p.assignedUserSyncIds];
@@ -382,12 +451,12 @@ export function buildAreas(state) {
  *    turns into a typed error.
  *  - window: 'active' (default) or 'all' — goal/project status filter.
  *
- * Progress math reuses the exact functions the UI uses (goalProgress.js,
- * projectProgress.js), so MCP never reports numbers the window would not show.
+ * Progress math reuses the exact functions the UI uses (agenda-core's
+ * progress.js), so MCP never reports numbers the window would not show.
  */
 export function buildGoalProgress(state, params) {
   const {
-    goals = [], projects = [], tasks = [], unscheduledTasks = [],
+    goals = [], projects = [],
     isVisibleForUser = () => true,
   } = state;
   const { goal_id: goalId, window: windowParam } = params ?? {};
@@ -399,11 +468,11 @@ export function buildGoalProgress(state, params) {
     return { notFound: false, invalid: `window must be 'active' or 'all', got ${JSON.stringify(windowParam)}` };
   }
 
-  const inScope = (entity) => scope === 'all' || entity.status === 'active';
-  const allTasks = [...tasks, ...unscheduledTasks].filter(isVisibleForUser);
-  // Progress denominators deliberately exclude device calendar events: they are
-  // not completable dayGLANCE work and would dilute every percentage.
-  const progressTasks = allTasks.filter((t) => !t._native);
+  // 'active' is everything but archived and completed, as documented: an
+  // on-hold project is open, and reports its status so the reader knows it
+  // is paused.
+  const inScope = (entity) => scope === 'all' || (entity.status !== 'archived' && entity.status !== 'completed');
+  const progressTasks = progressRows(state);
 
   const visibleGoals = goals.filter((g) => isVisibleForUser(g) && inScope(g));
   const selected = goalId === undefined ? visibleGoals : visibleGoals.filter((g) => g.id === goalId);
@@ -427,6 +496,62 @@ export function buildGoalProgress(state, params) {
     : [];
 
   return { notFound: false, invalid: null, goals: result, standalone_projects: standalone };
+}
+
+/**
+ * One project's tasks (#2392): the set its tasks_done and tasks_total count,
+ * so with completed tasks included the list is as long as tasks_total. Before
+ * this the only way to a project's scheduled tasks was one day read per date.
+ *
+ * Each item is in the shape the tool that already lists it uses, and says
+ * where it sits in `placement`: 'scheduled' (a day block, with its date),
+ * 'inbox' (an inbox item) or 'bucket_list' (a Bucket List item, with
+ * bucket_id). Scheduled tasks come first, by date, all-day before timed, then
+ * by start. The inbox group follows in the order the project's Planner lists
+ * it (agenda-core's sortProjectInbox under the project's task_order: the
+ * order the user dragged the tasks into, or deadlines first), completed ones
+ * last. The Bucket List comes last, in its stored order, which is the order
+ * dayglance_list_bucket_list returns. A recurring series is not listed, as it
+ * is not counted: it has no end to enumerate, and its occurrences are in the
+ * day reads.
+ *
+ * Unpaginated: the tool layer owns paging, as for the inbox (§5.1).
+ */
+export function buildProjectTasks(state, params) {
+  const { project_id: projectId, include_completed: includeCompleted = true } = params ?? {};
+  const { projects = [], tasks = [], unscheduledTasks = [], isVisibleForUser = () => true } = state;
+  const project = projects.find((p) => p && p.id === projectId && isVisibleForUser(p));
+  if (!project) return { notFound: true };
+
+  const mine = (t) => t && isVisibleForUser(t) && !t._native && inProject(project.id)(t) && (includeCompleted || !t.completed);
+  const stamp = { timeZone: state.timeZone };
+  const minutes = (t) => {
+    const m = /^(\d{1,2}):(\d{2})$/.exec(t.startTime ?? '');
+    return m ? Number(m[1]) * 60 + Number(m[2]) : Number.MAX_SAFE_INTEGER;
+  };
+  const scheduled = tasks.filter(mine)
+    .map((t, i) => ({ t, i }))
+    .sort((a, b) => String(a.t.date ?? '').localeCompare(String(b.t.date ?? ''))
+      || (a.t.isAllDay ? 0 : 1) - (b.t.isAllDay ? 0 : 1)
+      || (a.t.isAllDay ? 0 : minutes(a.t) - minutes(b.t))
+      || a.i - b.i)
+    .map(({ t }) => ({ ...toBlock(t, stamp), placement: 'scheduled' }));
+  const unscheduled = unscheduledTasks.filter(mine);
+  // The Planner's own two stable sorts: the project's order, then completed last.
+  const inbox = sortProjectInbox(unscheduled.filter(notBucketed), project.taskSort)
+    .sort((a, b) => (a.completed ? 1 : 0) - (b.completed ? 1 : 0))
+    .map((t) => ({ ...inboxItem(t, stamp), placement: 'inbox' }));
+  const bucket = unscheduled.filter((t) => !notBucketed(t)).map((t) => {
+    // Bucket List items carry no priority or deadline (buildBucketList).
+    const { priority: _p, deadline: _d, ...item } = inboxItem(t, stamp);
+    return { ...item, bucket_id: t.bucketId, placement: 'bucket_list' };
+  });
+
+  return {
+    notFound: false,
+    project: { id: project.id, title: project.title, status: project.status, task_order: projectTaskOrder(project) },
+    items: [...scheduled, ...inbox, ...bucket],
+  };
 }
 
 /**
@@ -472,6 +597,11 @@ export function handleMcpRequest(state, request) {
       return { ok: true, data: buildAreas(state) };
     case 'list_bucket_list':
       return { ok: true, data: buildBucketList(state) };
+    case 'list_project_tasks': {
+      const r = buildProjectTasks(state, params);
+      if (r.notFound) return { ok: false, error: { code: 'not_found', message: `No project with id ${JSON.stringify(params.project_id)}` } };
+      return { ok: true, data: { project: r.project, items: r.items } };
+    }
     case 'goal_progress': {
       const r = buildGoalProgress(state, params);
       if (r.invalid) return { ok: false, error: { code: 'validation', message: r.invalid } };

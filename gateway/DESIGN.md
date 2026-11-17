@@ -100,7 +100,7 @@ Milestone = { source, id, title, date, owner_id?, pins }
 - **Primary path (desktop):** connect to dayGLANCE's MCP on loopback `:7893`
   (`electron/mcpPort.ts: DEFAULT_MCP_PORT = 7893`) over MCP protocol. Gives access to
   time blocks, unscheduled inbox, habits, goals, routines — exactly the read/write models
-  in `src/utils/mcpReadModel.js`, `src/utils/mcpRoutines.js`.
+  in dayGLANCE's read model (`packages/dayglance-mcp`; before 5.12 `src/utils/mcpReadModel.js`) and write model (`src/utils/mcpWriteModel.js`).
 - **Fallback path (Docker web):** Playwright reader that launches the app, reads
   `localStorage` (`dayglance-multi-user-config`, task blobs), and maps
   `users[]` + `meUserSyncId` to the identity layer. Ownership roster comes from here —
