@@ -291,6 +291,11 @@ OMI_URL=http://<omi-host>:8000 OMI_MCP_TOKEN=omi_mcp_... scripts/setup.sh    # r
 `OMI_TOOLS=core` (default) exposes read-only tools; `all` includes writes. Check:
 `curl -s localhost:8090/health` now has an `"omi":{"ok":true,...}` entry.
 
+Omi's egress guard only lets it reach loopback and private LAN addresses, so use the gateway's LAN
+address in `ALLGLANCE_URL` / `CALDAV_DEFAULT_URL` (not a public name, and not a Tailscale `100.x`
+address). To allow another destination, see Omi's `omi-host/NETWORK.md` (`OMI_EGRESS_ALLOW`,
+`OMI_EGRESS_LAN`).
+
 Why events go to dayGLANCE and not over CalDAV: Vikunja holds task lists only, with no events
 calendar. Details and the full set-up are in [docs/integrations.md](docs/integrations.md) and
 Omi's `omi-host/examples/allglance/README.md`.
@@ -389,6 +394,11 @@ WebDAV server** (inside the `allglance` container) with the **same sync passphra
 Where: dayGLANCE **Settings -> Sync**; lastGLANCE **Cloud Sync**; lifeGLANCE
 **sync**. A new device's first sync may ask how to combine local and server data
 ("Merge both" is the safe choice).
+
+**Desktop apps and a LAN address.** The desktop builds refuse a sync server on a private
+network (`192.168.x.x`, `10.x`, ...) until you allow it: in Cloud Sync, press **Test**, then
+**Allow this address...** and confirm the dialog, once per address. Phones and the web builds
+do not ask.
 
 **The key.** Yes: one passphrase is the shared key. Each app derives its key
 from the passphrase plus a salt stored in the file (PBKDF2-SHA256, AES-256-GCM),
@@ -542,6 +552,8 @@ SOAK_REQUESTS=60 SOAK_SECONDS=120 GATEWAY_URL=... node scripts/soak.mjs   # quic
 ## Upkeep
 
 Nothing is forked, so upkeep is: move the pins, re-vendor, re-test.
+
+What each app and integration was last checked against: [docs/compatibility.md](docs/compatibility.md).
 
 ```bash
 scripts/upstream.sh status        # pinned vs latest release, and drift between pin / compose / .env.example
