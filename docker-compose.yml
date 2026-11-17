@@ -194,7 +194,7 @@ services:
         condition: service_healthy
     volumes:
       - ${ALLGLANCE_DATA:-/mnt/user/appdata/allglance-data}/dayglance-sync:/sync   # WebDAV root: app snapshots + intents
-      - ${ALLGLANCE_DATA:-/mnt/user/appdata/allglance-data}/gateway:/data          # roster cache
+      - ${ALLGLANCE_DATA:-/mnt/user/appdata/allglance-data}/gateway:/data          # roster cache, admin settings, token hashes
 
 # The gateway talks to Vikunja by its service name (matches gateway/src/config.js).
 networks:

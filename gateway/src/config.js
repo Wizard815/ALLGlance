@@ -28,6 +28,19 @@ export const config = {
     // When set, /api/allglance/* and /mcp require `Authorization: Bearer <token>`.
     token: env('GATEWAY_TOKEN', ''),
   },
+  // Scoped tokens and what counts as private (src/access.js). GATEWAY_TOKEN above stays the
+  // admin token; household and person tokens are made with scripts/tokens.mjs.
+  access: {
+    // Scoped tokens, stored as sha-256 hashes. On the data volume, never in git.
+    tokensFile: env('ALLGLANCE_TOKENS_FILE', '/data/tokens.json'),
+    // A Vikunja label with this title, or a dayGLANCE #tag with this name, marks an item private.
+    privateLabel: env('PRIVATE_LABEL', 'private'),
+    // Vikunja projects whose every task is private to one member: "<project id>:<owner id>,...".
+    privateProjects: env('VIKUNJA_PRIVATE_PROJECTS', ''),
+    // The roster id of the person who wears the Omi. Only they (and admin) see omi_* tools and
+    // Omi's day summary. Empty: Omi is admin-only.
+    omiOwner: env('OMI_OWNER_ID', ''),
+  },
   vikunja: {
     url: env('VIKUNJA_URL', 'http://vikunja:3456'),
     token: env('VIKUNJA_TOKEN', ''),

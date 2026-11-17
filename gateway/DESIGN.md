@@ -159,6 +159,7 @@ chore and milestone data, just without the MCP tool wrappers.
 `/api/allglance/` mirrors the MCP tools for non-MCP clients:
 
 ```
+GET    /api/allglance/whoami                      → the caller's scope (admin | household | person)
 GET    /api/allglance/users                       → family roster
 GET    /api/allglance/tasks?owner=...             → tasks across sources
 GET    /api/allglance/days/:date?owner=...        → day's tasks + time blocks (owner? optional)
@@ -167,6 +168,13 @@ GET    /api/allglance/chores?owner=...            → lastGLANCE chores
 GET    /api/allglance/milestones                  → lifeGLANCE milestones
 GET    /health                                    → per-adapter health + roster
 ```
+
+**Access.** `GATEWAY_TOKEN` is admin. Household and person tokens (`alg_`, hashed in
+`/data/tokens.json`, made with `scripts/tokens.mjs`) see shared and non-private items, and a
+person also their own private ones. `src/access.js` holds the rules; `Gateway.as(scope)` applies
+them, and every REST route and MCP tool goes through it. Private means a Vikunja `private`
+label (or a listed private project) or a dayGLANCE `#private` tag; Omi is its wearer's;
+`vikunja_native_*` and the raw `/vikunja/*` routes are admin-only. See the README, Access.
 
 The "calendar" view **is** `/days/:date` — dayGLANCE's time blocks plus vikunja's
 tasks for that date are returned together there. vikunja has no separate calendar

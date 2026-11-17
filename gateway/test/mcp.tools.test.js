@@ -30,6 +30,7 @@ describe('tool surface', () => {
     deepEqual(tools.map((t) => t.name).sort(), [
       'allglance_create_task', 'allglance_get_day', 'allglance_list_chores',
       'allglance_list_milestones', 'allglance_list_tasks', 'allglance_list_users', 'allglance_update_task',
+      'allglance_whoami',
     ]);
     for (const t of tools) {
       ok(t.description.length > 80 && t.description.length < 700, `${t.name} description length`);
