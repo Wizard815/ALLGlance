@@ -6,7 +6,7 @@
 
 export class McpHttpClient {
   /**
-   * @param {{ url: string, token?: string, timeoutMs?: number, clientName?: string }} opts
+   * @param {{ url: string, token?: string | (() => string), timeoutMs?: number, clientName?: string }} opts
    */
   constructor({ url, token = '', timeoutMs = 15000, clientName = 'allglance-gateway' }) {
     this.url = url;
@@ -23,7 +23,8 @@ export class McpHttpClient {
       'content-type': 'application/json',
       accept: 'application/json, text/event-stream',
     };
-    if (this.token) headers.authorization = `Bearer ${this.token}`;
+    const token = typeof this.token === 'function' ? this.token() : this.token;     // a function: read fresh each call (renewed tokens)
+    if (token) headers.authorization = `Bearer ${token}`;
     if (this.sessionId) headers['mcp-session-id'] = this.sessionId;
     const res = await fetch(this.url, {
       method: 'POST',

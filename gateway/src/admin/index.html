@@ -103,8 +103,26 @@ async function renderOverview() {
   const ev = s.files.events;
   g.append(h('div', { class: 'card' }, h('h3', {}, h('span', { class: 'dot ' + (ev.exists ? 'ok' : 'warn') }), 'App-to-app handoff'), h('div', { class: 'sub' }, ev.exists ? [ev.files + ' event file' + (ev.files === 1 ? '' : 's'), ' ', ev.encrypted ? h('span', { class: 'pill' }, 'encrypted') : h('span', { class: 'pill' }, 'plain')] : 'No events yet. Turn on the dayGLANCE integration in lastGLANCE and dayGLANCE (Setup tab).'), ev.waitingToBeFixed ? h('div', { class: 'sub' }, ev.waitingToBeFixed + ' waiting for a filename fix') : null));
   root.append(g);
+  try { root.append(await connectionsCard()); } catch {}
   if (s.roster?.length) root.append(h('h2', {}, 'Household'), h('div', { class: 'card' }, s.roster.map((u) => h('span', { class: 'pill' }, u.name + ' · ' + u.source))));
   root.append(h('div', { class: 'sub', style: 'margin-top:14px' }, h('button', { class: 'act', onclick: renderOverview }, 'Refresh'), ' Updates itself every 20 seconds.'));
+}
+
+// The Vikunja API token the gateway holds: works?, expiry, auto-renew. The token itself is never sent to this page.
+async function connectionsCard() {
+  const c = await api('/connections'); const v = c.vikunja;
+  const out = h('span', { class: 'sub' });
+  const STATES = { ok: ['ok', 'Working'], expiring: ['warn', 'Expiring soon'], invalid: ['bad', 'Refused by Vikunja'], unreachable: ['warn', 'Vikunja not answering'], unchecked: ['warn', 'Not checked yet'] };
+  const [cls, word] = STATES[v?.state] || ['warn', v?.state || 'unknown'];
+  const left = v?.daysLeft == null ? null : v.daysLeft <= 0 ? 'expired' : v.daysLeft + ' day' + (v.daysLeft === 1 ? '' : 's') + ' left';
+  const run = (renew) => async () => { out.textContent = renew ? 'Making a new token...' : 'Checking...'; try { const r = await api('/connections/vikunja', { method: 'POST', body: JSON.stringify({ renew }) }); out.textContent = r.error || (r.renewed ? 'Renewed.' : 'Checked.'); await renderOverview(); } catch (e) { out.textContent = e.message; } };
+  return h('div', { class: 'card', style: 'margin-top:14px' },
+    h('h3', {}, h('span', { class: 'dot ' + cls }), 'Vikunja token: ' + word),
+    h('div', { class: 'sub' }, v?.expiresAt ? ['Valid until ', h('b', {}, v.expiresAt.slice(0, 10)), left ? ' (' + left + ')' : ''] : 'Expiry not known yet'),
+    h('div', { class: 'sub' }, c.loginSaved ? 'Renews itself 30 days before it expires.' : 'Not renewed automatically: save a Vikunja login on the Settings tab.'),
+    v?.lastRenewedAt ? h('div', { class: 'sub' }, 'Last renewed ' + ago(v.lastRenewedAt)) : null,
+    v?.error || v?.note ? h('div', { class: 'sub', style: v.error ? 'color:var(--bad)' : '' }, v.error || v.note) : null,
+    h('div', { style: 'margin-top:8px' }, h('button', { class: 'act', onclick: run(false) }, 'Check now'), ' ', c.loginSaved ? h('button', { class: 'act', onclick: run(true) }, 'Renew now') : null, ' ', out));
 }
 
 async function renderSetup() {

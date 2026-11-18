@@ -98,6 +98,9 @@ export const config = {
   // CalDAV front door: serve Vikunja's /dav through the gateway (ENABLE_CALDAV_PROXY=false to turn off).
   caldav: {
     proxy: enabled(env('ENABLE_CALDAV_PROXY', 'true')),
+    // Apps may use the admin token or a household alg_ token as their CalDAV password; the gateway
+    // signs in to Vikunja with VIKUNJA_USERNAME / VIKUNJA_PASSWORD (src/caldavProxy.js).
+    tokenLogin: enabled(env('CALDAV_TOKEN_LOGIN', 'true')),
   },
   // Shared WebDAV sync directory (the dayglance-sync service's data dir, mounted
   // read-only). Every GLANCE app syncs a snapshot file here; with the shared
