@@ -58,7 +58,7 @@ async function fileInfo(path) {
 /**
  * @param {{ gateway: object, config: object, settingsFile: string, guard?: Function, restart?: () => void, fetchImpl?: Function }} deps
  */
-export function createAdminRouter({ gateway, config, settingsFile, tokensFile = config.access?.tokensFile, guard = (_q, _s, n) => n(), restart = () => process.exit(0), supervised = Boolean(process.env.ALLGLANCE_SUPERVISED) }) {
+export function createAdminRouter({ gateway, config, settingsFile, keeper = null, tokensFile = config.access?.tokensFile, guard = (_q, _s, n) => n(), restart = () => process.exit(0), supervised = Boolean(process.env.ALLGLANCE_SUPERVISED) }) {
   const router = express.Router();
   const revealSecrets = Boolean(config.server.token);
 
@@ -161,6 +161,21 @@ export function createAdminRouter({ gateway, config, settingsFile, tokensFile = 
     } catch (err) {
       res.status(400).json({ error: err.message });
     }
+  });
+
+  // The keys the gateway holds for the apps: whether each is set, and the Vikunja token's health.
+  api.get('/connections', (_req, res) => {
+    res.json({
+      vikunja: keeper ? keeper.status() : null,
+      loginSaved: Boolean(process.env.VIKUNJA_USERNAME && process.env.VIKUNJA_PASSWORD),
+      keys: { vikunja: Boolean(config.vikunja.token), dayglance: Boolean(config.dayglance.mcpToken), omi: Boolean(config.omi.token) },
+      caldavTokenLogin: Boolean(config.caldav?.tokenLogin),
+    });
+  });
+  // Check now; { renew: true } makes a new token even when the current one is far from expiring.
+  api.post('/connections/vikunja', async (req, res) => {
+    if (!keeper) return res.status(409).json({ error: 'Vikunja is off.' });
+    try { res.json(await keeper.check({ force: Boolean(req.body?.renew) })); } catch (err) { res.status(502).json({ error: err.message }); }
   });
 
   api.post('/restart', (_req, res) => {

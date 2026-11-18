@@ -27,19 +27,19 @@ export class VikunjaAdapter extends BaseAdapter {
   source = 'vikunja';
   label = 'vikunja';
 
-  #token;
   #baseUrl;
+  // Read from the shared config on every use: the token keeper may renew it while running.
+  get #token() { return this.config.vikunja.token; }
 
   constructor(opts) {
     super(opts);
     this.enabled = opts.config.vikunja.enabled;
     this.#baseUrl = opts.config.vikunja.url.replace(/\/$/, '');
-    this.#token = opts.config.vikunja.token;
     const mcp = opts.config.vikunja.mcp ?? {};
     this.#nativeEnabled = Boolean(mcp.enabled);
     this.#native = new McpHttpClient({
       url: `${this.#baseUrl}/api/v2/mcp`,
-      token: mcp.token || this.#token,
+      token: () => this.config.vikunja.mcp?.token || this.config.vikunja.token,
       timeoutMs: 8000,
     });
   }

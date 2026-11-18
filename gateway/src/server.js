@@ -11,7 +11,8 @@ import { createCaldavProxy } from './caldavProxy.js';
 import { createMcpRouter } from './mcp/server.js';
 import { createAdminRouter } from './admin.js';
 import DayglanceMcpClient from './transport/DayglanceMcpClient.js';
-import { TokenStore, authenticate } from './access.js';
+import { TokenStore, authenticate, scopeOf, ADMIN } from './access.js';
+import { VikunjaTokenKeeper } from './vikunjaTokenKeeper.js';
 
 import { timingSafeEqual } from 'node:crypto';
 
@@ -24,14 +25,29 @@ export function requireToken(token) {
   };
 }
 
-function buildServer() {
+const sameSecret = (a, b) => { const x = Buffer.from(String(a)); const y = Buffer.from(String(b)); return x.length === y.length && timingSafeEqual(x, y); };
+
+function buildServer({ settingsFile = process.env.ALLGLANCE_ADMIN_CONFIG || '/data/admin-config.json', keeper: keeperOpt } = {}) {
   const gateway = new Gateway();
   const app = express();
+  const tokens = new TokenStore(config.access.tokensFile);
+  // Keeps the Vikunja API token renewed (needs a Vikunja login saved on the admin page).
+  const keeper = keeperOpt === undefined && config.vikunja.enabled ? new VikunjaTokenKeeper({ config, settingsFile }) : (keeperOpt ?? null);
   // CalDAV passes straight through to Vikunja BEFORE any body parsing or the
   // gateway token check: CalDAV clients use Basic auth, which Vikunja validates.
+  // An app may instead sign in with a gateway token; the gateway then uses the saved Vikunja login.
   if (config.vikunja.enabled && config.caldav.proxy) {
-    app.use(createCaldavProxy({ target: config.vikunja.url }));
-    console.log(`[gateway] CalDAV served at /dav (proxied to ${config.vikunja.url}/dav; clients log in with their Vikunja credentials)`);
+    const isAdmin = (secret) => Boolean(config.server.token) && sameSecret(secret, config.server.token);
+    app.use(createCaldavProxy({
+      target: config.vikunja.url,
+      tokenLogin: {
+        enabled: () => config.caldav.tokenLogin,
+        isAdmin,
+        resolve: (secret) => (isAdmin(secret) ? ADMIN : (() => { const r = tokens.lookup(secret); return r ? scopeOf(r) : null; })()),
+        credentials: () => (process.env.VIKUNJA_USERNAME && process.env.VIKUNJA_PASSWORD ? { username: process.env.VIKUNJA_USERNAME, password: process.env.VIKUNJA_PASSWORD } : null),
+      },
+    }));
+    console.log(`[gateway] CalDAV served at /dav (proxied to ${config.vikunja.url}/dav; clients log in with their Vikunja credentials${config.caldav.tokenLogin ? ', or with the admin or a household token' : ''})`);
   }
   app.use(express.json({ limit: '5mb' }));
 
@@ -74,13 +90,13 @@ function buildServer() {
       const ok = await fetch(`http://127.0.0.1:${process.env.SYNC_WEBDAV_PORT}/`, { method: 'OPTIONS', signal: AbortSignal.timeout(2000) }).then(() => true, () => false);
       out.services = { sync: { ok } };
     }
+    if (keeper) out.vikunjaToken = keeper.status();      // state and expiry only, never the token
     res.json(out);
   });
 
   // Bearer tokens for everything except /health: GATEWAY_TOKEN is admin; household and person
   // alg_ tokens (scripts/tokens.mjs) see less. Without GATEWAY_TOKEN anyone who can reach the
   // port can read and create the family's tasks, private ones included.
-  const tokens = new TokenStore(config.access.tokensFile);
   app.use(['/api/allglance', '/mcp'], authenticate({ adminToken: config.server.token, store: tokens }));
   if (!config.server.token) {
     console.warn('[gateway] GATEWAY_TOKEN is not set: /api/allglance and /mcp are open to anyone who can reach this port');
@@ -92,7 +108,8 @@ function buildServer() {
   // The admin page (/admin) and its API; the API uses the same token as everything else.
   app.use(createAdminRouter({
     gateway, config,
-    settingsFile: process.env.ALLGLANCE_ADMIN_CONFIG || '/data/admin-config.json',
+    settingsFile,
+    keeper,
     guard: config.server.token ? requireToken(config.server.token) : undefined,
     tokensFile: config.access.tokensFile,
   }));
@@ -103,11 +120,12 @@ function buildServer() {
   // MCP front door.
   app.use(createMcpRouter(gateway));
 
-  return { app, gateway };
+  return { app, gateway, keeper };
 }
 
 async function main() {
-  const { app } = buildServer();
+  const { app, keeper } = buildServer();
+  keeper?.start();
   const { port, host } = config.server;
   app.listen(port, host, () => {
     console.log(`[gateway] AllGLANCE gateway listening on http://${host}:${port}`);

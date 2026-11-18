@@ -22,10 +22,35 @@ const HOP = new Set(['connection', 'keep-alive', 'proxy-authenticate', 'proxy-au
 
 export const isDavPath = (url) => /^\/dav(\/|\?|$)/.test(url ?? '');
 
+// Signing in with a gateway token (optional): an app may send the admin token or a household
+// alg_ token as its CalDAV password (any user name). The gateway then signs in to Vikunja with the
+// Vikunja login saved on the admin page, so no app needs a Vikunja password of its own and each one
+// can be cut off by revoking its token. Person tokens are refused: CalDAV hands over the whole
+// account, so it cannot hide another member's private tasks. Any other password goes to Vikunja
+// unchanged, as before.
+export const TOKEN_KINDS_FOR_CALDAV = new Set(['admin', 'household']);
+
+function basicCredentials(header) {
+  const m = /^Basic\s+(.+)$/i.exec(String(header ?? '').trim());
+  if (!m) return null;
+  const text = Buffer.from(m[1], 'base64').toString('utf8');
+  const i = text.indexOf(':');
+  return i < 0 ? null : { username: text.slice(0, i), password: text.slice(i + 1) };
+}
+
+const refuse = (res, status, text) => {
+  res.statusCode = status;
+  if (status === 401) res.setHeader('WWW-Authenticate', 'Basic realm="ALLGlance CalDAV"');
+  res.setHeader('content-type', 'text/plain; charset=utf-8');
+  res.end(text + '\n');
+};
+
 /**
- * @param {{ target: string, timeoutMs?: number }} opts  target = Vikunja base URL
+ * @param {{ target: string, timeoutMs?: number,
+ *           tokenLogin?: { resolve: (secret: string) => ({ kind: string } | null | undefined), credentials: () => ({ username: string, password: string } | null), enabled?: () => boolean } }} opts
+ *        target = Vikunja base URL. tokenLogin.resolve: the scope a gateway token stands for (null: not a gateway token).
  */
-export function createCaldavProxy({ target, timeoutMs = 30000 }) {
+export function createCaldavProxy({ target, timeoutMs = 30000, tokenLogin = null }) {
   const base = new URL(target);
   const client = base.protocol === 'https:' ? https : http;
   const basePath = base.pathname.replace(/\/$/, '');
@@ -46,6 +71,19 @@ export function createCaldavProxy({ target, timeoutMs = 30000 }) {
     headers['x-forwarded-for'] = [req.headers['x-forwarded-for'], req.socket.remoteAddress].filter(Boolean).join(', ');
     headers['x-forwarded-host'] = req.headers.host ?? '';
     headers['x-forwarded-proto'] = req.headers['x-forwarded-proto'] ?? (req.socket.encrypted ? 'https' : 'http');
+
+    if (tokenLogin && (tokenLogin.enabled?.() ?? true)) {
+      const basic = basicCredentials(req.headers.authorization);
+      const looksLikeGatewayToken = basic && (basic.password.startsWith('alg_') || tokenLogin.isAdmin?.(basic.password));
+      if (looksLikeGatewayToken) {
+        const scope = tokenLogin.resolve(basic.password);
+        if (!scope) return refuse(res, 401, 'This gateway token is not known here (revoked or mistyped).');
+        if (!TOKEN_KINDS_FOR_CALDAV.has(scope.kind)) return refuse(res, 403, 'A person token cannot sign in to CalDAV: it would see every private task. Use a household token, or your own Vikunja login.');
+        const creds = tokenLogin.credentials();
+        if (!creds) return refuse(res, 503, 'Signing in with a gateway token needs a Vikunja login saved on the ALLGlance admin page.');
+        headers.authorization = 'Basic ' + Buffer.from(`${creds.username}:${creds.password}`).toString('base64');
+      }
+    }
 
     const upstream = client.request(
       { protocol: base.protocol, hostname: base.hostname, port: base.port || undefined, method: req.method, path: basePath + req.url, headers, timeout: timeoutMs },
