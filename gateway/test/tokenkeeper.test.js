@@ -208,3 +208,29 @@ test('CalDAV: an ordinary Vikunja password passes through untouched; off or no s
     assert.match(await r.text(), /Vikunja login/);
   } finally { t.close(); }
 });
+
+
+test('the token scripts/setup.sh makes ("allglance") is recognised: its expiry is known and its permissions are copied', async () => {
+  const setupPerms = { mcp: ['access'], projects: ['read_all', 'read_one', 'users_search'], tasks: ['read_all', 'read_one', 'create', 'update'], tasks_assignees: ['create', 'read_all'] };
+  const v = fakeVikunja({ tokens: [{ id: 1, title: 'allglance', permissions: setupPerms, expires_at: new Date(NOW + 1800 * DAY).toISOString(), secret: 'tk_old' }] });
+  const k = keeper(v.fetchImpl);
+  const s = await k.check();
+  assert.equal(s.daysLeft, 1800);
+  const r = await k.check({ force: true });
+  assert.equal(r.renewed, true);
+  assert.deepEqual(v.st.tokens.map((t) => t.id), [10], 'the setup token was replaced, not left behind');
+  assert.deepEqual(v.st.tokens[0].permissions, setupPerms);
+});
+
+test('Renew now refuses to guess when it cannot tell which token is the gateway\'s', async () => {
+  const v = fakeVikunja({ tokens: [{ ...oldToken(300), id: 2 }, { ...oldToken(300), id: 3, title: 'allglance-gateway (old)', secret: 'tk_x' }] });
+  const s = await keeper(v.fetchImpl).check({ force: true });
+  assert.match(s.error, /Cannot tell/);
+  assert.equal(v.st.tokens.length, 2, 'nothing made, nothing deleted');
+  assert.equal(config.vikunja.token, 'tk_old');
+});
+
+test('default permissions are the ones scripts/setup.sh grants (MCP and user search included)', () => {
+  assert.deepEqual(DEFAULT_PERMISSIONS.mcp, ['access']);
+  assert.ok(DEFAULT_PERMISSIONS.projects.includes('users_search'));
+});

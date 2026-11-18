@@ -19,11 +19,14 @@ import { saveOverrides } from './adminSettings.js';
 
 const DAY = 86_400_000;
 export const TITLE = 'allglance-gateway';
-// What a gateway token needs when there is no old one to copy (a token that was refused): the
-// everyday task work the adapter does, the user search the roster uses, and Vikunja's own MCP.
+// Tokens this gateway may own: the one scripts/setup.sh makes ("allglance") and the ones the keeper makes.
+const OURS = /^allglance(\b|-)/;
+// What a gateway token needs when there is no old one to copy (a token that was refused): the same
+// as scripts/setup.sh grants. Vikunja's own MCP, the user search the roster uses, and task work.
 export const DEFAULT_PERMISSIONS = {
-  projects: ['create', 'read_all', 'read_one', 'update'],
-  tasks: ['create', 'read_all', 'read_one', 'update'],
+  mcp: ['access'],
+  projects: ['read_all', 'read_one', 'users_search'],
+  tasks: ['read_all', 'read_one', 'create', 'update'],
   tasks_assignees: ['create', 'read_all'],
 };
 
@@ -135,11 +138,18 @@ export class VikunjaTokenKeeper {
     const mine = Array.isArray(listed.data) ? listed.data : [];
     const state = this.#readState();
     // The token in use: the id remembered from the last renewal; before the first renewal, the one
-    // gateway token there is (by title). Unsure means unknown expiry, and a working token is kept.
+    // gateway token there is (by title: setup's "allglance" or the keeper's "allglance-gateway").
+    // Unsure (none, or several) means unknown expiry: a working token is then kept as it is.
     let current = mine.find((t) => t.id === state.id)
-      ?? (() => { const c = mine.filter((t) => String(t.title ?? '').startsWith(TITLE)); return c.length === 1 ? c[0] : null; })();
+      ?? (() => { const c = mine.filter((t) => OURS.test(String(t.title ?? ''))); return c.length === 1 ? c[0] : null; })();
     if (current && ok) this.#writeState({ ...state, id: current.id, expiresAt: current.expires_at });
     const exp = current?.expires_at ? Date.parse(current.expires_at) : null;
+    // Renew when near expiry or refused. A forced renewal of a working token needs to know which token
+    // it replaces (to copy its permissions and delete it); otherwise it would leave a second token behind.
+    if (force && ok && !current) {
+      this.last = { state: 'ok', checkedAt: at, error: 'Cannot tell which Vikunja token is this gateway\'s (none or several named allglance...), so it was not replaced. Delete the extra ones in Vikunja (Settings, API tokens).' };
+      return this.status();
+    }
     const due = force || !ok || (exp !== null && exp - this.now() <= this.renewBeforeMs);
     if (!due) {
       this.last = { state: 'ok', checkedAt: at };
