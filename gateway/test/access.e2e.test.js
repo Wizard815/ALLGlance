@@ -16,7 +16,9 @@ import { issueToken, revokeToken } from '../src/access.js';
 const here = dirname(fileURLToPath(import.meta.url));
 const DEV = join(here, '..', '..', 'scripts', 'dev');
 const hasPython = spawnSync('python3', ['--version']).status === 0;
-const DAY = '2026-11-20';
+// A day that is never today: the fake dayGLANCE reads "today" from the clock, and on that
+// day its timed blocks are also today's scheduled tasks, so the list checks below would change.
+const DAY = new Date(Date.now() + 30 * 86400_000).toISOString().slice(0, 10);
 
 const freePort = () => new Promise((r) => { const s = createServer().listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => r(port)); }); });
 
