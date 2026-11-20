@@ -15,6 +15,7 @@ import { DayglanceAdapter } from './adapters/DayglanceAdapter.js';
 import { LastglanceAdapter } from './adapters/LastglanceAdapter.js';
 import { LifeglanceAdapter } from './adapters/LifeglanceAdapter.js';
 import { OmiAdapter } from './adapters/OmiAdapter.js';
+import { MealieAdapter } from './adapters/MealieAdapter.js';
 import { ADMIN, policyFrom, canSee, omiAllowed, toolRefusal, whoami } from './access.js';
 
 /** `{ unavailable, note }` fields for a tool result, or nothing when all sources answered. */
@@ -53,6 +54,7 @@ export class Gateway {
       ['lastglance', LastglanceAdapter],
       ['lifeglance', LifeglanceAdapter],
       ['omi', OmiAdapter],
+      ['mealie', MealieAdapter],
     ];
     for (const [name, Ctor] of registry) {
       try {
@@ -288,10 +290,17 @@ export class Gateway {
     if (omiAdapter) {
       try { omi = await omiAdapter.daySummary(date); } catch { unavailable.push('omi'); }
     }
+    // Mealie's meal plan for that day: household-wide, so every caller gets it.
+    let meals;
+    const mealie = this.adapter('mealie');
+    if (mealie) {
+      try { meals = await mealie.mealsFor(date); } catch { unavailable.push('mealie'); }
+    }
     return {
       date, blocks: ordered.map(compactBlock), tasks: tasks.map(compactTask), overdue_count: overdue,
       ...(omiAdapter ? { omi_day_summary: omi ?? null } : {}),
-      ...unavailableNote(unavailable.filter((u) => ['vikunja', 'dayglance', 'omi'].includes(u))),
+      ...(mealie ? { meals: meals ?? [] } : {}),
+      ...unavailableNote(unavailable.filter((u) => ['vikunja', 'dayglance', 'omi', 'mealie'].includes(u))),
     };
   }
 

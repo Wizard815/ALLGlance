@@ -97,3 +97,13 @@ Its chat tool for *creating* events only writes to Google Calendar, and its CalD
 events calendar, which Vikunja does not have. With the ALLGlance chat app enabled, "put the dentist on
 Thursday at 3" can instead go to dayGLANCE through `allglance_create_task` (`source: dayglance`, `start`),
 which is the family calendar in this stack and shows up in `allglance_get_day`.
+
+## Mealie: the meal plan in the day
+
+With `MEALIE_URL` and `MEALIE_TOKEN` set, `allglance_get_day` also returns `meals`: that day's meal plan, breakfast to snack, with each recipe's slug. Agents that only use ALLGlance (Orb, FAITH, Hermes) then know what's for dinner.
+- **Token:** in Mealie, open your profile, then *API Tokens*, and make one for ALLGlance.
+- **Read-only.** The meal plan is the household's, so every caller gets it, household tokens included.
+- **Mealie versions:** newer Mealie keeps plans per household (`/api/households/mealplans`); older releases per group. Both work.
+- **If Mealie is down,** the day still comes back, with `mealie` listed under `unavailable`.
+- Set it up with `MEALIE_URL=http://<mealie-host>:9000 MEALIE_TOKEN=... scripts/setup.sh` (safe to re-run), or put both in `.env.allglance`.
+

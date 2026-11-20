@@ -283,6 +283,7 @@ lines to paste into Omi. Options, all environment variables:
 | `TZ` | the host's | e.g. `Europe/London`; dayGLANCE's "today" and Omi's event times follow it |
 | `VIKUNJA_USER` | `household` | Name of the Vikunja user it creates |
 | `OMI_URL`, `OMI_MCP_TOKEN` | unset | Connect Omi (section 6) |
+| `MEALIE_URL`, `MEALIE_TOKEN` | unset | The meal plan in `allglance_get_day` ([integrations](docs/integrations.md#mealie-the-meal-plan-in-the-day)) |
 | `COMPOSE_FILE` | `docker-compose.yml` | Add `:docker/compose.proxy-ca.yml` behind a TLS-intercepting proxy |
 
 Prefer to do it by hand?
