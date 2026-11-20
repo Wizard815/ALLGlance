@@ -20,6 +20,7 @@
 #   VIKUNJA_USER            Vikunja username to create (default: household)
 #   TZ                      time zone to record (default: the host's, else UTC)
 #   OMI_URL / OMI_MCP_TOKEN connect the Omi wearable backend (optional; see README)
+#   MEALIE_URL / MEALIE_TOKEN add Mealie's meal plan to allglance_get_day (optional)
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -62,6 +63,8 @@ HOSTTZ=${TZ:-$(cat /etc/timezone 2>/dev/null || timedatectl show -p Timezone --v
 [[ "$(get VIKUNJA_PUBLIC_URL)" == "http://localhost:3457" || -z "$(get VIKUNJA_PUBLIC_URL)" ]] && set_kv VIKUNJA_PUBLIC_URL "http://$HOSTIP:3457"
 [[ -n "${OMI_URL:-}" ]] && set_kv OMI_URL "${OMI_URL%/}"
 [[ -n "${OMI_MCP_TOKEN:-}" ]] && set_kv OMI_MCP_TOKEN "$OMI_MCP_TOKEN"
+[[ -n "${MEALIE_URL:-}" ]] && set_kv MEALIE_URL "${MEALIE_URL%/}"
+[[ -n "${MEALIE_TOKEN:-}" ]] && set_kv MEALIE_TOKEN "$MEALIE_TOKEN"
 
 if [[ -z "$(get GLANCE_SYNC_PASSPHRASE)" ]]; then
   if [[ -n "${GLANCE_SYNC_PASSPHRASE:-}" ]]; then

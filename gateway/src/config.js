@@ -95,6 +95,13 @@ export const config = {
     // all: every tool the key allows; off: only the day summary in allglance_get_day.
     tools: env('OMI_TOOLS', 'core'),
   },
+  // Mealie: the meal plan in allglance_get_day (read-only, household-wide). Off until both are set.
+  mealie: {
+    url: env('MEALIE_URL', ''),
+    // A Mealie API token: Mealie -> your profile -> API Tokens.
+    token: env('MEALIE_TOKEN', ''),
+    enabled: enabled(env('ENABLE_MEALIE', 'true')),
+  },
   // CalDAV front door: serve Vikunja's /dav through the gateway (ENABLE_CALDAV_PROXY=false to turn off).
   caldav: {
     proxy: enabled(env('ENABLE_CALDAV_PROXY', 'true')),
@@ -129,6 +136,7 @@ export function enabledAdapters() {
     lastglance: config.lastglance.enabled,
     lifeglance: config.lifeglance.enabled,
     omi: config.omi.enabled && Boolean(config.omi.url),
+    mealie: config.mealie.enabled && Boolean(config.mealie.url) && Boolean(config.mealie.token),
   })
     .filter(([, v]) => v)
     .map(([name]) => name);
