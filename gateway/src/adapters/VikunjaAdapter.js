@@ -108,6 +108,15 @@ export class VikunjaAdapter extends BaseAdapter {
    * total_pages }. per_page is silently capped server-side, so the loop is
    * driven by total_pages rather than by guessing the page size.
    */
+  /**
+   * The real projects. Vikunja also lists views with negative ids (-1 Favorites,
+   * -2 "My Open Tasks"): their tasks live in a real project too, so reading them
+   * would list a task twice, under a project id the private-project rule doesn't know.
+   */
+  async #projects() {
+    return (await this.#paginate('/api/v2/projects')).filter((p) => Number(p.id) > 0);
+  }
+
   async #paginate(endpoint, params = {}, acc = []) {
     const url = new URL(`${this.#baseUrl}${endpoint}`);
     for (const [k, v] of Object.entries(params)) {
@@ -131,7 +140,7 @@ export class VikunjaAdapter extends BaseAdapter {
    */
   async refreshRoster() {
     try {
-      const projects = await this.#paginate('/api/v2/projects');
+      const projects = await this.#projects();
       for (const project of projects) {
         if (project.is_archived) continue;
         const users = await this.#paginate(`/api/v2/projects/${project.id}/users/search`);
@@ -147,7 +156,7 @@ export class VikunjaAdapter extends BaseAdapter {
 
   /** Read tasks, scoped to `owner` when provided. */
   async readTasks(owner = null) {
-    const projects = await this.#paginate('/api/v2/projects');
+    const projects = await this.#projects();
     const tasks = [];
     const roster = this.roster;
     for (const project of projects) {
@@ -200,7 +209,7 @@ export class VikunjaAdapter extends BaseAdapter {
   async #resolveProject(project) {
     const given = project === undefined || project === null || project === '' ? this.config.vikunja.defaultProjectId : project;
     if (given !== undefined && given !== '' && /^\d+$/.test(String(given))) return Number(given);
-    const projects = await this.#paginate('/api/v2/projects');
+    const projects = await this.#projects();
     if (given !== undefined && given !== '') {
       const hit = projects.find((p) => String(p.title ?? '').toLowerCase() === String(given).toLowerCase());
       if (!hit) throw new Error(`No Vikunja project named "${given}". Projects: ${projects.map((p) => p.title).join(', ')}`);
@@ -369,7 +378,7 @@ export class VikunjaAdapter extends BaseAdapter {
 
     router.get('/vikunja/projects', async (req, res) => {
       try {
-        const projects = await this.#paginate('/api/v2/projects');
+        const projects = await this.#projects();
         res.json({ source: 'vikunja', count: projects.length, projects });
       } catch (err) {
         res.status(502).json({ source: 'vikunja', error: err.message });

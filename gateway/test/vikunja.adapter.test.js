@@ -39,6 +39,17 @@ test('readTasks pages through projects and tasks via page/total_pages', async ()
   assert.ok(!calls.some((c) => c.includes('/projects/2/')), 'archived project skipped');
 });
 
+test('readTasks skips Vikunja views with negative ids (My Open Tasks would list a task twice)', async () => {
+  const calls = [];
+  stubFetch((u) => {
+    if (u.pathname === '/api/v2/projects') return { items: [{ id: 4, title: 'Family' }, { id: -2, title: 'My Open Tasks' }], total_pages: 1 };
+    return { total_pages: 1, items: [{ id: 3, title: 'ring call', assignees: [{ id: 1 }] }] };
+  }, calls);
+  const { tasks } = await adapter().readTasks();
+  assert.deepEqual(tasks.map((t) => [t.title, t.project_id]), [['ring call', 4]]);
+  assert.ok(!calls.some((c) => c.includes('/projects/-2/')), 'the view is not read');
+});
+
 test('writeTask posts to the project route with due_date, then assigns', async () => {
   const calls = [];
   const bodies = [];
