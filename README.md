@@ -1,5 +1,7 @@
 # ALLGlance
 
+[![License: PolyForm Shield 1.0.0](https://img.shields.io/badge/license-PolyForm%20Shield%201.0.0-blue)](LICENSE)
+
 **Calendar · Tasks · Life Events, with MCP.** Using the GLANCE ecosystem &
 vikunja.
 
@@ -692,3 +694,15 @@ on 2.7.1 and 2.8.0. Pins are deliberately exact.
   plus dayGLANCE's native tools behind its MCP.
 - dayGLANCE MCP hydration from GLANCEvault needs the sync passphrase (a vault
   provider hook is reserved in `container-mcp/state.mjs`).
+
+## License
+
+ALLGlance is source-available under the
+[PolyForm Shield License 1.0.0](LICENSE). You can read, run, change and share
+it for free, including at work. You can't sell it or offer it as a competing
+product or hosted service without permission: open an issue titled
+"License request" to ask. [docs/LICENSING.md](docs/LICENSING.md) explains it
+in plain English. Versions published before the switch stay under MIT.
+
+The vendored dayGLANCE model in `gateway/container-mcp/model/` stays MIT, and the
+submodule apps keep their own licenses.
